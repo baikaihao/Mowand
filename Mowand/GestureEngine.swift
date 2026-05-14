@@ -80,10 +80,20 @@ final class GestureEngine: ObservableObject {
     private static let hudRefreshInterval: TimeInterval = 1.0 / 24.0
     private static let trajectoryRefreshInterval: TimeInterval = 1.0 / 60.0
 
-    @Published private(set) var hud = GestureHUDPresentation()
-    @Published private(set) var trajectory = GestureTrajectoryPresentation()
     @Published private(set) var isRunning = false
 
+    var hudPublisher: AnyPublisher<GestureHUDPresentation, Never> {
+        hudSubject.eraseToAnyPublisher()
+    }
+
+    var trajectoryPublisher: AnyPublisher<GestureTrajectoryPresentation, Never> {
+        trajectorySubject.eraseToAnyPublisher()
+    }
+
+    private var hud = GestureHUDPresentation()
+    private var trajectory = GestureTrajectoryPresentation()
+    private let hudSubject = CurrentValueSubject<GestureHUDPresentation, Never>(GestureHUDPresentation())
+    private let trajectorySubject = CurrentValueSubject<GestureTrajectoryPresentation, Never>(GestureTrajectoryPresentation())
     private weak var store: ConfigurationStore?
     private weak var appEnvironment: AppEnvironment?
     private weak var executor: ActionExecutor?
@@ -94,7 +104,7 @@ final class GestureEngine: ObservableObject {
     private var recognitionTask: Task<Void, Never>?
     private var lastHUDUpdateTime: TimeInterval = 0
     private var lastTrajectoryUpdateTime: TimeInterval = 0
-    private var replayedRightClickEventsRemaining = 0
+    private var replayedMouseEventsRemaining: [Int64: Int] = [:]
 
     func configure(store: ConfigurationStore, appEnvironment: AppEnvironment, executor: ActionExecutor) {
         self.store = store
@@ -157,8 +167,8 @@ final class GestureEngine: ObservableObject {
         tap = nil
         runLoopSource = nil
         session = GestureSession()
-        hud = GestureHUDPresentation()
-        trajectory = GestureTrajectoryPresentation()
+        setHUD(GestureHUDPresentation())
+        setTrajectory(GestureTrajectoryPresentation())
         isRunning = false
     }
 
@@ -172,8 +182,14 @@ final class GestureEngine: ObservableObject {
             return Unmanaged.passUnretained(event)
         }
 
-        if replayedRightClickEventsRemaining > 0, isRightClickReplayEvent(type) {
-            replayedRightClickEventsRemaining -= 1
+        if let buttonNumber = replayButtonNumber(for: type, event: event),
+           let remaining = replayedMouseEventsRemaining[buttonNumber],
+           remaining > 0 {
+            if remaining == 1 {
+                replayedMouseEventsRemaining[buttonNumber] = nil
+            } else {
+                replayedMouseEventsRemaining[buttonNumber] = remaining - 1
+            }
             return Unmanaged.passUnretained(event)
         }
 
@@ -189,35 +205,52 @@ final class GestureEngine: ObservableObject {
             return Unmanaged.passUnretained(event)
         }
 
-        guard let button = button(for: type, event: event),
-              button == store.settings.triggerButton,
-              ModifierFlags(cgFlags: event.flags) == store.settings.triggerModifiers else {
+        guard let button = button(for: type, event: event) else {
             return Unmanaged.passUnretained(event)
         }
 
         switch type {
         case .rightMouseDown, .otherMouseDown:
-            beginSession(at: event.location, button: button)
+            let screenFrame = screenFrame(containing: event.location)
+            guard store.hasEligibleRules(
+                button: button,
+                modifiers: ModifierFlags(),
+                location: event.location,
+                screenFrame: screenFrame,
+                frontmostApplication: appEnvironment?.frontmostApplication
+            ) else {
+                return Unmanaged.passUnretained(event)
+            }
+            beginSession(at: event.location, button: button, screenFrame: screenFrame)
             return nil
         case .rightMouseDragged, .otherMouseDragged:
+            guard session.isActive, button == session.button else {
+                return Unmanaged.passUnretained(event)
+            }
             updateSession(at: event.location)
             return nil
         case .rightMouseUp, .otherMouseUp:
+            guard session.isActive, button == session.button else {
+                return Unmanaged.passUnretained(event)
+            }
             return endSession(event: event)
         default:
             return Unmanaged.passUnretained(event)
         }
     }
 
-    private func beginSession(at location: CGPoint, button: MouseTriggerButton) {
+    private func beginSession(
+        at location: CGPoint,
+        button: MouseTriggerButton,
+        screenFrame: CGRect
+    ) {
         recognitionTask?.cancel()
         recognitionTask = nil
         lastHUDUpdateTime = 0
         lastTrajectoryUpdateTime = 0
-        let screenFrame = screenFrame(containing: location)
         let templateCandidates = store?.templateCandidates(
             button: button,
-            modifiers: store?.settings.triggerModifiers ?? ModifierFlags(),
+            modifiers: ModifierFlags(),
             location: location,
             screenFrame: screenFrame,
             frontmostApplication: appEnvironment?.frontmostApplication
@@ -302,7 +335,7 @@ final class GestureEngine: ObservableObject {
         recordMovement(to: event.location, store: store)
 
         guard session.hasExceededThreshold else {
-            replayRightClick(at: session.startLocation)
+            replayClick(button: session.button, at: session.startLocation)
             hideHUDAfterDelay(id: session.id)
             return nil
         }
@@ -336,7 +369,7 @@ final class GestureEngine: ObservableObject {
                 message: store.matchFailureMessage(
                     directions: recognizedDirections,
                     button: session.button,
-                    modifiers: store.settings.triggerModifiers,
+                    modifiers: ModifierFlags(),
                     location: session.startLocation,
                     screenFrame: session.screenFrame,
                     frontmostApplication: appEnvironment?.frontmostApplication
@@ -465,7 +498,7 @@ final class GestureEngine: ObservableObject {
         if let directionMatch = store.match(
             directions: result.directions,
             button: session.button,
-            modifiers: store.settings.triggerModifiers,
+            modifiers: ModifierFlags(),
             location: session.startLocation,
             screenFrame: session.screenFrame,
             frontmostApplication: appEnvironment?.frontmostApplication
@@ -490,7 +523,7 @@ final class GestureEngine: ObservableObject {
         session.hasPotentialMatch = store.hasPotentialMatch(
             directions: session.directions,
             button: session.button,
-            modifiers: store.settings.triggerModifiers,
+            modifiers: ModifierFlags(),
             location: session.startLocation,
             screenFrame: session.screenFrame,
             frontmostApplication: appEnvironment?.frontmostApplication
@@ -548,7 +581,7 @@ final class GestureEngine: ObservableObject {
                 hudHideTasks[id] = nil
             }
         }
-        hud = presentation
+        setHUD(presentation)
     }
 
     private func updateTrajectoryFromSession(force: Bool = true, isError: Bool = false, isCancelled: Bool = false) {
@@ -593,14 +626,14 @@ final class GestureEngine: ObservableObject {
         if presentation.snapshots.count > 6 {
             presentation.snapshots.removeFirst(presentation.snapshots.count - 6)
         }
-        trajectory = presentation
+        setTrajectory(presentation)
     }
 
     private func updateHUDSnapshot(id: UUID, update: (inout GestureHUDSnapshot) -> Void) {
         var presentation = hud
         guard let index = presentation.snapshots.firstIndex(where: { $0.id == id }) else { return }
         update(&presentation.snapshots[index])
-        hud = presentation
+        setHUD(presentation)
     }
 
     private func markHUDSnapshotFading(id: UUID, duration: TimeInterval) {
@@ -614,7 +647,7 @@ final class GestureEngine: ObservableObject {
     private func removeHUDSnapshot(id: UUID) {
         var presentation = hud
         presentation.snapshots.removeAll { $0.id == id }
-        hud = presentation
+        setHUD(presentation)
         removeTrajectorySnapshot(id: id)
     }
 
@@ -623,13 +656,23 @@ final class GestureEngine: ObservableObject {
         guard let index = presentation.snapshots.firstIndex(where: { $0.id == id }) else { return }
         presentation.snapshots[index].fadeStartedAt = Date()
         presentation.snapshots[index].fadeDuration = duration
-        trajectory = presentation
+        setTrajectory(presentation)
     }
 
     private func removeTrajectorySnapshot(id: UUID) {
         var presentation = trajectory
         presentation.snapshots.removeAll { $0.id == id }
+        setTrajectory(presentation)
+    }
+
+    private func setHUD(_ presentation: GestureHUDPresentation) {
+        hud = presentation
+        hudSubject.send(presentation)
+    }
+
+    private func setTrajectory(_ presentation: GestureTrajectoryPresentation) {
         trajectory = presentation
+        trajectorySubject.send(presentation)
     }
 
     nonisolated private static func nanoseconds(_ seconds: TimeInterval) -> UInt64 {
@@ -836,20 +879,51 @@ final class GestureEngine: ObservableObject {
         }
     }
 
-    private func replayRightClick(at location: CGPoint) {
-        guard session.button == .right else { return }
+    private func replayClick(button: MouseTriggerButton, at location: CGPoint) {
         let source = CGEventSource(stateID: .hidSystemState)
-        let down = CGEvent(mouseEventSource: source, mouseType: .rightMouseDown, mouseCursorPosition: location, mouseButton: .right)
-        let up = CGEvent(mouseEventSource: source, mouseType: .rightMouseUp, mouseCursorPosition: location, mouseButton: .right)
+        let mouseButton = cgMouseButton(for: button)
+        let down = CGEvent(mouseEventSource: source, mouseType: mouseDownType(for: button), mouseCursorPosition: location, mouseButton: mouseButton)
+        let up = CGEvent(mouseEventSource: source, mouseType: mouseUpType(for: button), mouseCursorPosition: location, mouseButton: mouseButton)
+        down?.setIntegerValueField(.mouseEventButtonNumber, value: button.buttonNumber)
+        up?.setIntegerValueField(.mouseEventButtonNumber, value: button.buttonNumber)
         down?.setIntegerValueField(.eventSourceUserData, value: Self.replayEventMarker)
         up?.setIntegerValueField(.eventSourceUserData, value: Self.replayEventMarker)
-        replayedRightClickEventsRemaining = 2
+        replayedMouseEventsRemaining[button.buttonNumber, default: 0] += 2
         down?.post(tap: .cghidEventTap)
         up?.post(tap: .cghidEventTap)
     }
 
-    private func isRightClickReplayEvent(_ type: CGEventType) -> Bool {
-        type == .rightMouseDown || type == .rightMouseUp
+    private func cgMouseButton(for button: MouseTriggerButton) -> CGMouseButton {
+        switch button {
+        case .right: return .right
+        case .middle: return .center
+        case .auxiliary(let buttonNumber): return CGMouseButton(rawValue: UInt32(buttonNumber)) ?? .center
+        }
+    }
+
+    private func mouseDownType(for button: MouseTriggerButton) -> CGEventType {
+        switch button {
+        case .right: return .rightMouseDown
+        case .middle, .auxiliary: return .otherMouseDown
+        }
+    }
+
+    private func mouseUpType(for button: MouseTriggerButton) -> CGEventType {
+        switch button {
+        case .right: return .rightMouseUp
+        case .middle, .auxiliary: return .otherMouseUp
+        }
+    }
+
+    private func replayButtonNumber(for type: CGEventType, event: CGEvent) -> Int64? {
+        switch type {
+        case .rightMouseDown, .rightMouseDragged, .rightMouseUp:
+            return MouseTriggerButton.right.buttonNumber
+        case .otherMouseDown, .otherMouseDragged, .otherMouseUp:
+            return event.getIntegerValueField(.mouseEventButtonNumber)
+        default:
+            return nil
+        }
     }
 
     private func screenFrame(containing location: CGPoint) -> CGRect {
@@ -868,12 +942,9 @@ final class GestureEngine: ObservableObject {
             return .right
         case .otherMouseDown, .otherMouseDragged, .otherMouseUp:
             let buttonNumber = event.getIntegerValueField(.mouseEventButtonNumber)
-            switch buttonNumber {
-            case 2: return .middle
-            case 3: return .button4
-            case 4: return .button5
-            default: return nil
-            }
+            guard buttonNumber > 1 else { return nil }
+            if buttonNumber == MouseTriggerButton.middle.buttonNumber { return .middle }
+            return .auxiliary(buttonNumber)
         default:
             return nil
         }

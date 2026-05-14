@@ -34,7 +34,7 @@ final class HUDWindowController {
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         window.contentView = contentView
 
-        engine.$hud.sink { [weak self] presentation in
+        engine.hudPublisher.sink { [weak self] presentation in
             guard let self else { return }
             let screenFrame = presentation.screenFrame ?? NSScreen.main?.frame ?? self.window.frame
             if self.window.frame != screenFrame {
@@ -51,7 +51,7 @@ final class HUDWindowController {
         }
         .store(in: &cancellables)
 
-        engine.$trajectory.sink { [weak self] presentation in
+        engine.trajectoryPublisher.sink { [weak self] presentation in
             self?.trajectoryView.presentation = presentation
         }
         .store(in: &cancellables)
