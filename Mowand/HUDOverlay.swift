@@ -69,15 +69,9 @@ private struct HUDSnapshotLayer: View {
         GeometryReader { proxy in
             if snapshot.isVisible {
                 ZStack {
-                    let points = normalizedPoints(in: proxy.size)
+                    let geometry = pathGeometry(in: proxy.size)
 
-                    if snapshot.style.showTrajectory {
-                        GesturePath(points: points)
-                            .stroke(pathColor, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
-                            .shadow(radius: 5)
-                    }
-
-                    if showsDirectionGuide, snapshot.style.showDirectionGuide, let pointer = points.last {
+                    if showsDirectionGuide, snapshot.style.showDirectionGuide, let pointer = geometry.points.last {
                         SmoothDirectionGuideContainer(
                             style: snapshot.style,
                             currentDirection: snapshot.currentDirection,
@@ -110,8 +104,8 @@ private struct HUDSnapshotLayer: View {
                         }
                     }
                     .padding(14)
-                    .background(glassPanelBackground)
-                    .position(panelPosition(in: proxy.size))
+                    .background(panelBackground)
+                    .position(panelPosition(in: proxy.size, bounds: geometry.bounds))
                 }
                 .allowsHitTesting(false)
             }
@@ -130,7 +124,17 @@ private struct HUDSnapshotLayer: View {
         return "wand.and.stars"
     }
 
-    private var glassPanelBackground: some View {
+    @ViewBuilder
+    private var panelBackground: some View {
+        switch snapshot.style.panelBackgroundStyle {
+        case .transparentGlass:
+            transparentGlassPanelBackground
+        case .frostedGlass:
+            frostedGlassPanelBackground
+        }
+    }
+
+    private var transparentGlassPanelBackground: some View {
         let fill = colorScheme == .dark ? Color.black.opacity(0.22) : Color.white.opacity(0.2)
         let stroke = colorScheme == .dark ? Color.white.opacity(0.18) : Color.white.opacity(0.58)
         return RoundedRectangle(cornerRadius: 8)
@@ -142,31 +146,63 @@ private struct HUDSnapshotLayer: View {
             .shadow(color: .black.opacity(0.14), radius: 16, y: 8)
     }
 
-    private func normalizedPoints(in size: CGSize) -> [CGPoint] {
-        guard let screenFrame = snapshot.screenFrame else { return snapshot.points }
-        return snapshot.points.map { point in
-            CGPoint(
-                x: point.x - screenFrame.minX,
-                y: point.y - screenFrame.minY
+    private var frostedGlassPanelBackground: some View {
+        RoundedRectangle(cornerRadius: 8)
+            .fill(.regularMaterial)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(.white.opacity(0.18), lineWidth: 1)
             )
-        }
+            .shadow(color: .black.opacity(0.14), radius: 16, y: 8)
     }
 
-    private func panelPosition(in size: CGSize) -> CGPoint {
-        let points = normalizedPoints(in: size)
-        guard !points.isEmpty else {
+    private func pathGeometry(in size: CGSize) -> HUDPathGeometry {
+        guard !snapshot.points.isEmpty else {
+            return HUDPathGeometry(points: [], bounds: nil)
+        }
+
+        let offsetX = snapshot.screenFrame?.minX ?? 0
+        let offsetY = snapshot.screenFrame?.minY ?? 0
+        var normalizedPoints: [CGPoint] = []
+        normalizedPoints.reserveCapacity(snapshot.points.count)
+        var minX = Double.greatestFiniteMagnitude
+        var maxX = -Double.greatestFiniteMagnitude
+        var minY = Double.greatestFiniteMagnitude
+        var maxY = -Double.greatestFiniteMagnitude
+
+        for point in snapshot.points {
+            let normalizedPoint = CGPoint(
+                x: point.x - offsetX,
+                y: point.y - offsetY
+            )
+            normalizedPoints.append(normalizedPoint)
+            minX = min(minX, normalizedPoint.x)
+            maxX = max(maxX, normalizedPoint.x)
+            minY = min(minY, normalizedPoint.y)
+            maxY = max(maxY, normalizedPoint.y)
+        }
+
+        return HUDPathGeometry(
+            points: normalizedPoints,
+            bounds: CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+        )
+    }
+
+    private func panelPosition(in size: CGSize, bounds: CGRect?) -> CGPoint {
+        guard let bounds else {
             return CGPoint(x: size.width / 2, y: 90)
         }
-        let minX = points.map(\.x).min() ?? size.width / 2
-        let maxX = points.map(\.x).max() ?? size.width / 2
-        let minY = points.map(\.y).min() ?? size.height / 2
-        let maxY = points.map(\.y).max() ?? size.height / 2
-        let center = CGPoint(x: (minX + maxX) / 2, y: (minY + maxY) / 2)
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
         return CGPoint(
             x: min(max(center.x + 120, 180), size.width - 180),
             y: min(max(center.y - 80, 80), size.height - 80)
         )
     }
+}
+
+private struct HUDPathGeometry {
+    var points: [CGPoint]
+    var bounds: CGRect?
 }
 
 private struct SmoothDirectionGuideContainer: View {
@@ -338,19 +374,5 @@ private struct DirectionSectorShape: Shape {
             x: center.x + cos(radians) * radius,
             y: center.y + sin(radians) * radius
         )
-    }
-}
-
-private struct GesturePath: Shape {
-    var points: [CGPoint]
-
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        guard let first = points.first else { return path }
-        path.move(to: first)
-        for point in points.dropFirst() {
-            path.addLine(to: point)
-        }
-        return path
     }
 }

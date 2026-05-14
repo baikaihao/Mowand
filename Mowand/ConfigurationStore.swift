@@ -81,41 +81,84 @@ final class ConfigurationStore: ObservableObject {
         screenFrame: CGRect,
         frontmostApplication: AppIdentity?
     ) -> GestureMatch? {
-        let enabledRules = configuration.rules.filter {
-            $0.isEnabled
-                && $0.triggerButton == button
-                && $0.modifiers == modifiers
-                && $0.directions == directions
-                && $0.region.contains(location: location, in: screenFrame)
+        guard let candidate = eligibleRuleCandidates(
+            button: button,
+            modifiers: modifiers,
+            location: location,
+            screenFrame: screenFrame,
+            frontmostApplication: frontmostApplication
+        ).first(where: { $0.rule.directions == directions }) else {
+            return nil
         }
 
-        if let frontmostApplication,
-           let applicationRule = enabledRules.first(where: { rule in
-               rule.scope.bundleIdentifier == frontmostApplication.bundleIdentifier
-                   || (rule.scope.bundleIdentifier == nil && rule.scope.title == frontmostApplication.displayName)
-           }) {
-            return GestureMatch(rule: applicationRule, isApplicationSpecific: true)
+        return GestureMatch(
+            rule: candidate.rule,
+            isApplicationSpecific: candidate.isApplicationSpecific,
+            recognition: .directionChain
+        )
+    }
+
+    func templateMatch(
+        points: [CGPoint],
+        button: MouseTriggerButton,
+        modifiers: ModifierFlags,
+        location: CGPoint,
+        screenFrame: CGRect,
+        frontmostApplication: AppIdentity?
+    ) -> GestureMatch? {
+        let candidates = eligibleRuleCandidates(
+            button: button,
+            modifiers: modifiers,
+            location: location,
+            screenFrame: screenFrame,
+            frontmostApplication: frontmostApplication
+        ).filter { !$0.rule.directions.isEmpty }
+
+        guard let candidate = GestureTemplateRecognizer.bestMatch(points: points, candidates: candidates) else {
+            return nil
         }
 
-        let isExcluded = frontmostApplication.map { app in
-            configuration.excludedApplications.contains { excluded in
-                if let excludedBundle = excluded.bundleIdentifier, let appBundle = app.bundleIdentifier {
-                    return excludedBundle == appBundle
-                }
-                return excluded.path == app.path || excluded.displayName == app.displayName
-            }
-        } ?? false
+        return GestureMatch(
+            rule: candidate.rule,
+            isApplicationSpecific: candidate.isApplicationSpecific,
+            recognition: .template
+        )
+    }
 
-        guard !isExcluded else { return nil }
-
-        if let globalRule = enabledRules.first(where: {
-            if case .global = $0.scope { return true }
-            return false
-        }) {
-            return GestureMatch(rule: globalRule, isApplicationSpecific: false)
+    func templateCandidates(
+        button: MouseTriggerButton,
+        modifiers: ModifierFlags,
+        location: CGPoint,
+        screenFrame: CGRect,
+        frontmostApplication: AppIdentity?
+    ) -> [GestureTemplateCandidate] {
+        eligibleRuleCandidates(
+            button: button,
+            modifiers: modifiers,
+            location: location,
+            screenFrame: screenFrame,
+            frontmostApplication: frontmostApplication
+        ).compactMap { candidate in
+            guard !candidate.rule.directions.isEmpty else { return nil }
+            let vectors = GestureTemplateRecognizer.templateVectors(for: candidate.rule)
+            guard !vectors.isEmpty else { return nil }
+            return GestureTemplateCandidate(
+                ruleID: candidate.rule.id,
+                isApplicationSpecific: candidate.isApplicationSpecific,
+                templateVectors: vectors
+            )
         }
+    }
 
-        return nil
+    func match(ruleID: UUID, isApplicationSpecific: Bool, recognition: GestureRecognitionKind) -> GestureMatch? {
+        guard let rule = configuration.rules.first(where: { $0.id == ruleID && $0.isEnabled }) else {
+            return nil
+        }
+        return GestureMatch(
+            rule: rule,
+            isApplicationSpecific: isApplicationSpecific,
+            recognition: recognition
+        )
     }
 
     func hasPotentialMatch(
@@ -193,8 +236,8 @@ final class ConfigurationStore: ObservableObject {
                 && rule.triggerButton == candidate.triggerButton
                 && rule.modifiers == candidate.modifiers
                 && rule.region == candidate.region
-                && rule.directions == candidate.directions
                 && rule.scope == candidate.scope
+                && rule.directions == candidate.directions
         }
     }
 
@@ -273,6 +316,70 @@ final class ConfigurationStore: ObservableObject {
     private func isGlobalRule(_ rule: GestureRule) -> Bool {
         if case .global = rule.scope { return true }
         return false
+    }
+
+    private func eligibleRuleCandidates(
+        button: MouseTriggerButton,
+        modifiers: ModifierFlags,
+        location: CGPoint,
+        screenFrame: CGRect,
+        frontmostApplication: AppIdentity?
+    ) -> [GestureRuleCandidate] {
+        let triggerRules = configuration.rules.filter {
+            $0.isEnabled
+                && $0.triggerButton == button
+                && $0.modifiers == modifiers
+                && $0.region.contains(location: location, in: screenFrame)
+        }
+
+        let applicationRules: [GestureRuleCandidate]
+        if let frontmostApplication {
+            applicationRules = triggerRules.compactMap { rule in
+                guard rule.matchesApplication(frontmostApplication) else { return nil }
+                return GestureRuleCandidate(rule: rule, isApplicationSpecific: true)
+            }
+        } else {
+            applicationRules = []
+        }
+
+        let isExcluded = frontmostApplication.map(isApplicationExcluded) ?? false
+        let globalRules: [GestureRuleCandidate]
+        if isExcluded {
+            globalRules = []
+        } else {
+            globalRules = triggerRules.compactMap { rule in
+                guard isGlobalRule(rule) else { return nil }
+                return GestureRuleCandidate(rule: rule, isApplicationSpecific: false)
+            }
+        }
+
+        return applicationRules + globalRules
+    }
+}
+
+struct GestureRuleCandidate {
+    var rule: GestureRule
+    var isApplicationSpecific: Bool
+}
+
+struct GestureTemplateCandidate: Sendable {
+    var ruleID: UUID
+    var isApplicationSpecific: Bool
+    var templateVectors: [[Double]]
+}
+
+private extension GestureRule {
+    func matchesApplication(_ application: AppIdentity) -> Bool {
+        switch scope {
+        case .global:
+            return false
+        case .application(let identity):
+            if let ruleBundle = identity.bundleIdentifier,
+               let applicationBundle = application.bundleIdentifier {
+                return ruleBundle == applicationBundle
+            }
+            return identity.path == application.path || identity.displayName == application.displayName
+        }
     }
 }
 
