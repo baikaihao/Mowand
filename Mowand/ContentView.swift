@@ -3,12 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @EnvironmentObject private var store: ConfigurationStore
     @EnvironmentObject private var permissions: PermissionMonitor
-    @EnvironmentObject private var appEnvironment: AppEnvironment
-    @EnvironmentObject private var gestureEngine: GestureEngine
-    @EnvironmentObject private var actionExecutor: ActionExecutor
-    @EnvironmentObject private var rangeSelector: RangeSelectionCoordinator
 
     @State private var selectedPage: SettingsPage = .gestures
     @State private var selectedRuleID: GestureRule.ID?
@@ -90,7 +85,7 @@ private struct Sidebar: View {
 
                 Text("魔杖")
                     .font(.headline)
-                Text("右键拖动绘制八方向手势")
+                Text("按规则设定的鼠标按钮拖动绘制八方向手势")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -257,18 +252,8 @@ private struct RuleRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                Text(rule.name)
-                    .font(.headline)
-                Spacer()
-                if rule.isDefaultTemplate {
-                    Text("默认")
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.secondary.opacity(0.14), in: Capsule())
-                }
-            }
+            Text(rule.name)
+                .font(.headline)
             Text(rule.gestureTitle)
                 .font(.subheadline)
             Text("\(rule.scope.title) · \(rule.region.title) · \(rule.actionTitle)")
@@ -317,14 +302,8 @@ private struct RuleEditor: View {
                 .pickerStyle(.segmented)
 
                 SectionHeader("触发")
-                Picker("鼠标按钮", selection: $rule.triggerButton) {
-                    ForEach(MouseTriggerButton.allCases) { button in
-                        Text(button.title).tag(button)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                ModifierEditor(modifiers: $rule.modifiers)
+                TriggerButtonEditor(button: $rule.triggerButton)
+                    .id(rule.id)
 
                 SectionHeader("手势模板")
                 GestureTemplateEditor(rule: $rule)
@@ -376,17 +355,164 @@ private struct RuleEditor: View {
     }
 }
 
-private struct ModifierEditor: View {
-    @Binding var modifiers: ModifierFlags
+private struct TriggerButtonEditor: View {
+    private enum TriggerButtonChoice: String, Hashable {
+        case right
+        case middle
+        case auxiliary
+    }
+
+    @Binding var button: MouseTriggerButton
+    @State private var isAuxiliaryChoiceSelected = false
+    @State private var isRecordingAuxiliaryButton = false
+    @State private var recordingMessage: String?
+    @State private var localEventMonitor: Any?
+    @State private var globalEventMonitor: Any?
 
     var body: some View {
-        HStack {
-            Toggle("⌘", isOn: $modifiers.command)
-            Toggle("⌥", isOn: $modifiers.option)
-            Toggle("⌃", isOn: $modifiers.control)
-            Toggle("⇧", isOn: $modifiers.shift)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Text("鼠标按钮")
+                    .frame(width: 72, alignment: .leading)
+                Picker("鼠标按钮", selection: buttonChoiceBinding) {
+                    Text("右键").tag(TriggerButtonChoice.right)
+                    Text("中键").tag(TriggerButtonChoice.middle)
+                    Text(auxiliarySegmentTitle).tag(TriggerButtonChoice.auxiliary)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 300)
+
+                if isAuxiliaryChoiceSelected {
+                    Button {
+                        toggleAuxiliaryRecording()
+                    } label: {
+                        Label(isRecordingAuxiliaryButton ? "录入中" : recordButtonTitle, systemImage: isRecordingAuxiliaryButton ? "record.circle" : "button.programmable")
+                    }
+                    .help("点击后按下鼠标侧键，记录实际按钮编号")
+                }
+            }
+
+            if let recordingMessage {
+                Text(recordingMessage)
+                    .font(.caption)
+                    .foregroundStyle(isRecordingAuxiliaryButton ? Color.secondary : Color.orange)
+            }
         }
-        .toggleStyle(.button)
+        .onAppear {
+            isAuxiliaryChoiceSelected = button.isAuxiliary
+        }
+        .onDisappear {
+            stopAuxiliaryRecording()
+        }
+    }
+
+    private var auxiliarySegmentTitle: String {
+        if case .auxiliary = button {
+            return button.title
+        }
+        return "侧键"
+    }
+
+    private var recordButtonTitle: String {
+        if case .auxiliary = button {
+            return "重新录入"
+        }
+        return "录入侧键"
+    }
+
+    private var buttonChoiceBinding: Binding<TriggerButtonChoice> {
+        Binding(
+            get: { buttonChoice },
+            set: { newValue in
+                switch newValue {
+                case .right:
+                    isAuxiliaryChoiceSelected = false
+                    button = .right
+                    recordingMessage = nil
+                    stopAuxiliaryRecording()
+                case .middle:
+                    isAuxiliaryChoiceSelected = false
+                    button = .middle
+                    recordingMessage = nil
+                    stopAuxiliaryRecording()
+                case .auxiliary:
+                    isAuxiliaryChoiceSelected = true
+                    recordingMessage = nil
+                    stopAuxiliaryRecording()
+                }
+            }
+        )
+    }
+
+    private var buttonChoice: TriggerButtonChoice {
+        if isAuxiliaryChoiceSelected {
+            return .auxiliary
+        }
+
+        switch button {
+        case .right:
+            return .right
+        case .middle:
+            return .middle
+        case .auxiliary:
+            return .auxiliary
+        }
+    }
+
+    private func toggleAuxiliaryRecording() {
+        if isRecordingAuxiliaryButton {
+            stopAuxiliaryRecording()
+            return
+        }
+
+        startAuxiliaryRecording()
+    }
+
+    private func startAuxiliaryRecording() {
+        stopAuxiliaryRecording()
+        isRecordingAuxiliaryButton = true
+        recordingMessage = "按下要用于触发手势的鼠标侧键。"
+
+        localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.otherMouseDown]) { event in
+            guard recordAuxiliaryButton(event) else {
+                return event
+            }
+            return nil
+        }
+
+        globalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.otherMouseDown]) { event in
+            recordAuxiliaryButton(event)
+        }
+    }
+
+    private func stopAuxiliaryRecording() {
+        if let localEventMonitor {
+            NSEvent.removeMonitor(localEventMonitor)
+            self.localEventMonitor = nil
+        }
+
+        if let globalEventMonitor {
+            NSEvent.removeMonitor(globalEventMonitor)
+            self.globalEventMonitor = nil
+        }
+        isRecordingAuxiliaryButton = false
+    }
+
+    @discardableResult
+    private func recordAuxiliaryButton(_ event: NSEvent) -> Bool {
+        let buttonNumber = Int64(event.buttonNumber)
+        guard buttonNumber > MouseTriggerButton.middle.buttonNumber else {
+            recordingMessage = "右键/中键请直接选择固定项。"
+            stopAuxiliaryRecording()
+            return false
+        }
+
+        button = .auxiliary(buttonNumber)
+        isAuxiliaryChoiceSelected = true
+        recordingMessage = "已录入 \(button.title)。"
+        stopAuxiliaryRecording()
+        return true
     }
 }
 

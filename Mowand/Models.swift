@@ -124,21 +124,70 @@ enum GestureDirection: String, Codable, CaseIterable, Identifiable, Hashable {
     }
 }
 
-enum MouseTriggerButton: String, Codable, CaseIterable, Identifiable {
+enum MouseTriggerButton: Codable, Hashable, Identifiable {
     case right
     case middle
-    case button4
-    case button5
+    case auxiliary(Int64)
 
-    var id: String { rawValue }
+    var id: String { storageValue }
 
     var title: String {
         switch self {
         case .right: "右键"
         case .middle: "中键"
-        case .button4: "侧键 1"
-        case .button5: "侧键 2"
+        case .auxiliary(let buttonNumber): "侧键 \(buttonNumber)"
         }
+    }
+
+    var buttonNumber: Int64 {
+        switch self {
+        case .right: 1
+        case .middle: 2
+        case .auxiliary(let buttonNumber): buttonNumber
+        }
+    }
+
+    var isAuxiliary: Bool {
+        if case .auxiliary = self {
+            return true
+        }
+        return false
+    }
+
+    private var storageValue: String {
+        switch self {
+        case .right: "right"
+        case .middle: "middle"
+        case .auxiliary(let buttonNumber): "auxiliary:\(buttonNumber)"
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        switch value {
+        case "right":
+            self = .right
+        case "middle":
+            self = .middle
+        case "button4":
+            self = .auxiliary(3)
+        case "button5":
+            self = .auxiliary(4)
+        default:
+            if value.hasPrefix("auxiliary:"),
+               let buttonNumber = Int64(value.dropFirst("auxiliary:".count)),
+               buttonNumber > 2 {
+                self = .auxiliary(buttonNumber)
+            } else {
+                self = .right
+            }
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(storageValue)
     }
 }
 

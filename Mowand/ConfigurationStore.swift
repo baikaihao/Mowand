@@ -150,6 +150,22 @@ final class ConfigurationStore: ObservableObject {
         }
     }
 
+    func hasEligibleRules(
+        button: MouseTriggerButton,
+        modifiers: ModifierFlags,
+        location: CGPoint,
+        screenFrame: CGRect,
+        frontmostApplication: AppIdentity?
+    ) -> Bool {
+        !eligibleRuleCandidates(
+            button: button,
+            modifiers: modifiers,
+            location: location,
+            screenFrame: screenFrame,
+            frontmostApplication: frontmostApplication
+        ).isEmpty
+    }
+
     func match(ruleID: UUID, isApplicationSpecific: Bool, recognition: GestureRecognitionKind) -> GestureMatch? {
         guard let rule = configuration.rules.first(where: { $0.id == ruleID && $0.isEnabled }) else {
             return nil
@@ -174,7 +190,6 @@ final class ConfigurationStore: ObservableObject {
         let enabledRules = configuration.rules.filter {
             $0.isEnabled
                 && $0.triggerButton == button
-                && $0.modifiers == modifiers
                 && $0.directions.count > directions.count
                 && $0.directions.starts(with: directions)
                 && $0.region.contains(location: location, in: screenFrame)
@@ -211,9 +226,9 @@ final class ConfigurationStore: ObservableObject {
         guard !enabledDirectionRules.isEmpty else { return "方向已分配，但规则未启用" }
 
         let triggerRules = enabledDirectionRules.filter {
-            $0.triggerButton == button && $0.modifiers == modifiers
+            $0.triggerButton == button
         }
-        guard !triggerRules.isEmpty else { return "方向已分配，触发条件不一致" }
+        guard !triggerRules.isEmpty else { return "方向已分配，触发按钮不一致" }
 
         let regionRules = triggerRules.filter {
             $0.region.contains(location: location, in: screenFrame)
@@ -234,7 +249,6 @@ final class ConfigurationStore: ObservableObject {
                 && rule.isEnabled
                 && candidate.isEnabled
                 && rule.triggerButton == candidate.triggerButton
-                && rule.modifiers == candidate.modifiers
                 && rule.region == candidate.region
                 && rule.scope == candidate.scope
                 && rule.directions == candidate.directions
@@ -328,7 +342,6 @@ final class ConfigurationStore: ObservableObject {
         let triggerRules = configuration.rules.filter {
             $0.isEnabled
                 && $0.triggerButton == button
-                && $0.modifiers == modifiers
                 && $0.region.contains(location: location, in: screenFrame)
         }
 
