@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var store: ConfigurationStore
@@ -51,7 +53,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         switch self {
         case .gestures: "手势"
         case .hud: "HUD"
-        case .applications: "应用规则"
+        case .applications: "黑名单"
         case .general: "通用设置"
         }
     }
@@ -296,9 +298,9 @@ private struct RuleEditor: View {
                 }
 
                 HStack {
-                    Text("分配动作")
+                    Text("动作链")
                         .frame(width: 72, alignment: .leading)
-                    Picker("分配动作", selection: assignedSystemActionBinding) {
+                    Picker("动作链", selection: assignedSystemActionBinding) {
                         ForEach(SystemAction.allCases) { action in
                             Label(action.title, systemImage: action.symbolName)
                                 .tag(action)
@@ -324,14 +326,14 @@ private struct RuleEditor: View {
 
                 ModifierEditor(modifiers: $rule.modifiers)
 
-                SectionHeader("方向序列")
-                DirectionSequenceEditor(directions: $rule.directions)
+                SectionHeader("手势模板")
+                GestureTemplateEditor(rule: $rule)
 
                 SectionHeader("屏幕区域")
                 RegionEditor(region: $rule.region)
 
                 if !store.conflictingRules(for: rule).isEmpty {
-                    Label("存在同作用域、同触发条件和同方向序列的冲突规则", systemImage: "exclamationmark.triangle")
+                    Label("存在同作用域、同触发条件和相近手势模板的冲突规则", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
                 }
             }
@@ -422,6 +424,93 @@ private struct DirectionSequenceEditor: View {
     }
 }
 
+private struct GestureTemplateEditor: View {
+    @Binding var rule: GestureRule
+
+    var body: some View {
+        GroupBox("基础方向模板") {
+            VStack(alignment: .leading, spacing: 14) {
+                GestureTemplatePreview(points: GestureTemplateShape.points(for: rule.directions))
+                    .frame(height: 132)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    DirectionSequenceEditor(directions: $rule.directions)
+                    Text("识别器会把这个方向模板转换成轨迹形状来匹配。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(4)
+        }
+    }
+}
+
+private struct GestureTemplatePreview: View {
+    let points: [CGPoint]
+
+    var body: some View {
+        GeometryReader { proxy in
+            let normalized = normalizedPoints(in: proxy.size)
+            ZStack {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(.secondary.opacity(0.08))
+                if normalized.count >= 2 {
+                    Path { path in
+                        path.move(to: normalized[0])
+                        for point in normalized.dropFirst() {
+                            path.addLine(to: point)
+                        }
+                    }
+                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                } else {
+                    Text("添加方向后显示模板预览")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func normalizedPoints(in size: CGSize) -> [CGPoint] {
+        guard points.count >= 2 else { return points }
+        let minX = points.map(\.x).min() ?? 0
+        let maxX = points.map(\.x).max() ?? 0
+        let minY = points.map(\.y).min() ?? 0
+        let maxY = points.map(\.y).max() ?? 0
+        let width = max(maxX - minX, 1)
+        let height = max(maxY - minY, 1)
+        let inset = 8.0
+        let scale = min((size.width - inset * 2) / width, (size.height - inset * 2) / height)
+        let contentWidth = width * scale
+        let contentHeight = height * scale
+        let offsetX = (size.width - contentWidth) / 2
+        let offsetY = (size.height - contentHeight) / 2
+        return points.map { point in
+            CGPoint(
+                x: offsetX + (point.x - minX) * scale,
+                y: offsetY + (point.y - minY) * scale
+            )
+        }
+    }
+}
+
+private enum GestureTemplateShape {
+    static func points(for directions: [GestureDirection]) -> [CGPoint] {
+        var points = [CGPoint.zero]
+        var current = CGPoint.zero
+        let step = 72.0
+        for direction in directions {
+            let components = direction.components
+            current = CGPoint(
+                x: current.x + Double(components.x) * step,
+                y: current.y + Double(components.y) * step
+            )
+            points.append(current)
+        }
+        return points
+    }
+}
+
 private struct RegionEditor: View {
     @EnvironmentObject private var rangeSelector: RangeSelectionCoordinator
     @Binding var region: ScreenRegion
@@ -494,7 +583,7 @@ private struct ApplicationsPage: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Text("应用规则")
+            Text("黑名单")
                 .font(.largeTitle.bold())
 
             GroupBox("当前运行的 App") {
@@ -514,7 +603,7 @@ private struct ApplicationsPage: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Button(isExcluded(app) ? "已加入" : "加入排除列表") {
+                            Button(isExcluded(app) ? "已加入" : "加入黑名单") {
                                 store.addExcludedApplication(app)
                             }
                             .disabled(isExcluded(app))
@@ -524,31 +613,45 @@ private struct ApplicationsPage: View {
                 }
             }
 
-            GroupBox("排除全局手势的 App") {
-                if store.excludedApplications.isEmpty {
-                    Text("暂无排除项。应用专属规则仍会优先触发。")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    List(store.excludedApplications) { app in
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(app.displayName)
-                                Text(app.bundleIdentifier ?? app.path ?? "无标识")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button {
-                                store.removeExcludedApplication(app)
-                            } label: {
-                                Image(systemName: "minus.circle")
-                            }
-                            .buttonStyle(.plain)
+            GroupBox {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("黑名单 App")
+                            .font(.headline)
+                        Spacer()
+                        Button {
+                            selectApplicationForBlacklist()
+                        } label: {
+                            Label("从访达选择 App", systemImage: "folder")
                         }
                     }
-                    .frame(minHeight: 180)
+
+                    if store.excludedApplications.isEmpty {
+                        Text("暂无黑名单 App。应用专属规则仍会优先触发。")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        List(store.excludedApplications) { app in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(app.displayName)
+                                    Text(app.bundleIdentifier ?? app.path ?? "无标识")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button {
+                                    store.removeExcludedApplication(app)
+                                } label: {
+                                    Image(systemName: "minus.circle")
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .frame(minHeight: 180)
+                    }
                 }
+                .padding(4)
             }
 
             Spacer()
@@ -556,9 +659,31 @@ private struct ApplicationsPage: View {
         .padding(24)
     }
 
+    private func selectApplicationForBlacklist() {
+        let panel = NSOpenPanel()
+        panel.title = "选择加入黑名单的 App"
+        panel.prompt = "加入黑名单"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.applicationBundle]
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let bundle = Bundle(url: url)
+        let bundleIdentifier = bundle?.bundleIdentifier
+        let displayName = bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? url.deletingPathExtension().lastPathComponent
+        store.addExcludedApplication(AppIdentity(
+            bundleIdentifier: bundleIdentifier,
+            displayName: displayName,
+            path: url.path
+        ))
+    }
+
     private func isExcluded(_ app: AppIdentity) -> Bool {
         store.excludedApplications.contains { excluded in
-            excluded.id == app.id
+            excluded.id == app.id || excluded.path == app.path
         }
     }
 }
@@ -583,6 +708,12 @@ private struct HUDSettingsPage: View {
                         Toggle("显示方向范围", isOn: hudBinding(\.showDirectionGuide))
                         Toggle("显示方向文字", isOn: hudBinding(\.showDirectionLabels))
                         Toggle("显示方向箭头", isOn: hudBinding(\.showDirectionArrows))
+                        Picker("判断窗口", selection: hudBinding(\.panelBackgroundStyle)) {
+                            ForEach(HUDPanelBackgroundStyle.allCases) { style in
+                                Text(style.title).tag(style)
+                            }
+                        }
+                        .pickerStyle(.segmented)
                         SliderRow(title: "停留时间", value: settingsBinding(\.hudDismissDelay), range: 0.1...2, suffix: "秒")
                         SliderRow(title: "淡出时间", value: settingsBinding(\.hudFadeDuration), range: 0.05...0.6, suffix: "秒", precision: 2)
                     }
@@ -655,6 +786,11 @@ private struct HUDPreview: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(.quaternary.opacity(0.8))
+                if style.showTrajectory {
+                    HUDPreviewTrajectoryPath(points: points)
+                        .stroke(style.highlightedColor.color, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                        .shadow(radius: 5)
+                }
                 HUDOverlay(snapshot: snapshot)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             }
@@ -675,6 +811,20 @@ private struct HUDPreview: View {
         return points.enumerated().map { index, point in
             TimedGesturePoint(point: point, timestamp: now - Double(points.count - 1 - index) * 0.12)
         }
+    }
+}
+
+private struct HUDPreviewTrajectoryPath: Shape {
+    var points: [CGPoint]
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        guard let first = points.first else { return path }
+        path.move(to: first)
+        for point in points.dropFirst() {
+            path.addLine(to: point)
+        }
+        return path
     }
 }
 
@@ -726,6 +876,8 @@ private struct GeneralSettingsPage: View {
             VStack(alignment: .leading, spacing: 22) {
                 Text("通用设置")
                     .font(.largeTitle.bold())
+
+                AboutSection()
 
                 GroupBox("权限") {
                     HStack {
@@ -794,6 +946,8 @@ private struct GeneralSettingsPage: View {
                     .padding(4)
                 }
                 .frame(maxWidth: .infinity)
+
+                FeedbackSection()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, 32)
@@ -828,6 +982,51 @@ private struct GeneralSettingsPage: View {
                 store.updateSettings { $0[keyPath: keyPath] = value }
             }
         )
+    }
+}
+
+private struct AboutSection: View {
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 88, height: 88)
+                .shadow(color: .black.opacity(0.12), radius: 8, y: 4)
+
+            Text("版本 \(appVersion)")
+                .font(.headline)
+
+            Text("Build \(buildNumber)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+    }
+
+    private var buildNumber: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
+    }
+}
+
+private struct FeedbackSection: View {
+    private let feedbackIssueURL = URL(string: "https://github.com/OWNER/REPO/issues/new")!
+
+    var body: some View {
+        GroupBox("反馈") {
+            HStack(spacing: 12) {
+                Label("通过 GitHub Issue 提交反馈", systemImage: "bubble.left.and.bubble.right")
+                Spacer()
+                Link("打开反馈入口", destination: feedbackIssueURL)
+            }
+            .padding(4)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 

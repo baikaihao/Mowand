@@ -65,7 +65,7 @@ enum GestureDirection: String, Codable, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    static func from(delta: CGSize) -> GestureDirection? {
+    nonisolated static func from(delta: CGSize) -> GestureDirection? {
         let distance = hypot(delta.width, delta.height)
         guard distance >= 1 else { return nil }
 
@@ -95,7 +95,7 @@ enum GestureDirection: String, Codable, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    var components: (x: Int, y: Int) {
+    nonisolated var components: (x: Int, y: Int) {
         switch self {
         case .east: (1, 0)
         case .southEast: (1, 1)
@@ -108,11 +108,11 @@ enum GestureDirection: String, Codable, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    var isDiagonal: Bool {
+    nonisolated var isDiagonal: Bool {
         components.x != 0 && components.y != 0
     }
 
-    func isDiagonalBridge(from previous: GestureDirection, to next: GestureDirection) -> Bool {
+    nonisolated func isDiagonalBridge(from previous: GestureDirection, to next: GestureDirection) -> Bool {
         guard isDiagonal, !previous.isDiagonal, !next.isDiagonal else { return false }
         let previousComponents = previous.components
         let nextComponents = next.components
@@ -300,6 +300,21 @@ struct GestureRule: Codable, Identifiable, Hashable {
     var updatedAt: Date
     var isDefaultTemplate: Bool
 
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case isEnabled
+        case scope
+        case triggerButton
+        case modifiers
+        case region
+        case directions
+        case actions
+        case createdAt
+        case updatedAt
+        case isDefaultTemplate
+    }
+
     init(
         id: UUID = UUID(),
         name: String,
@@ -326,6 +341,38 @@ struct GestureRule: Codable, Identifiable, Hashable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.isDefaultTemplate = isDefaultTemplate
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        isEnabled = try container.decode(Bool.self, forKey: .isEnabled)
+        scope = try container.decode(GestureScope.self, forKey: .scope)
+        triggerButton = try container.decode(MouseTriggerButton.self, forKey: .triggerButton)
+        modifiers = try container.decode(ModifierFlags.self, forKey: .modifiers)
+        region = try container.decode(ScreenRegion.self, forKey: .region)
+        directions = try container.decode([GestureDirection].self, forKey: .directions)
+        actions = try container.decode([ActionStep].self, forKey: .actions)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        isDefaultTemplate = try container.decode(Bool.self, forKey: .isDefaultTemplate)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(isEnabled, forKey: .isEnabled)
+        try container.encode(scope, forKey: .scope)
+        try container.encode(triggerButton, forKey: .triggerButton)
+        try container.encode(modifiers, forKey: .modifiers)
+        try container.encode(region, forKey: .region)
+        try container.encode(directions, forKey: .directions)
+        try container.encode(actions, forKey: .actions)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encode(isDefaultTemplate, forKey: .isDefaultTemplate)
     }
 
     var gestureTitle: String {
@@ -630,6 +677,20 @@ enum HUDColorPreset: String, Codable, CaseIterable, Identifiable, Hashable {
     }
 }
 
+enum HUDPanelBackgroundStyle: String, Codable, CaseIterable, Identifiable, Hashable {
+    case transparentGlass
+    case frostedGlass
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .transparentGlass: "透明玻璃"
+        case .frostedGlass: "磨砂玻璃"
+        }
+    }
+}
+
 struct HUDSettings: Codable, Hashable {
     var showTrajectory: Bool = true
     var showDirectionGuide: Bool = true
@@ -643,6 +704,7 @@ struct HUDSettings: Codable, Hashable {
     var normalLineColor: HUDColorPreset = .white
     var showDirectionLabels: Bool = true
     var showDirectionArrows: Bool = true
+    var panelBackgroundStyle: HUDPanelBackgroundStyle = .transparentGlass
 
     private enum CodingKeys: String, CodingKey {
         case showTrajectory
@@ -658,6 +720,7 @@ struct HUDSettings: Codable, Hashable {
         case normalLineColor
         case showDirectionLabels
         case showDirectionArrows
+        case panelBackgroundStyle
     }
 
     init() {}
@@ -679,6 +742,7 @@ struct HUDSettings: Codable, Hashable {
         normalLineColor = try container.decodeIfPresent(HUDColorPreset.self, forKey: .normalLineColor) ?? defaults.normalLineColor
         showDirectionLabels = try container.decodeIfPresent(Bool.self, forKey: .showDirectionLabels) ?? defaults.showDirectionLabels
         showDirectionArrows = try container.decodeIfPresent(Bool.self, forKey: .showDirectionArrows) ?? defaults.showDirectionArrows
+        panelBackgroundStyle = try container.decodeIfPresent(HUDPanelBackgroundStyle.self, forKey: .panelBackgroundStyle) ?? defaults.panelBackgroundStyle
     }
 
     func encode(to encoder: Encoder) throws {
@@ -695,6 +759,7 @@ struct HUDSettings: Codable, Hashable {
         try container.encode(normalLineColor, forKey: .normalLineColor)
         try container.encode(showDirectionLabels, forKey: .showDirectionLabels)
         try container.encode(showDirectionArrows, forKey: .showDirectionArrows)
+        try container.encode(panelBackgroundStyle, forKey: .panelBackgroundStyle)
     }
 }
 
@@ -728,4 +793,10 @@ enum ActionExecutionState: Equatable {
 struct GestureMatch {
     var rule: GestureRule
     var isApplicationSpecific: Bool
+    var recognition: GestureRecognitionKind = .directionChain
+}
+
+enum GestureRecognitionKind {
+    case directionChain
+    case template
 }
