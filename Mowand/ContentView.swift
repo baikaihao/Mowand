@@ -156,33 +156,41 @@ private struct GesturesPage: View {
     @State private var showingDeleteConfirmation = false
 
     var body: some View {
-        HSplitView {
-            VStack(spacing: 0) {
-                header
-                List(selection: $selectedRuleID) {
-                    ForEach(store.rules) { rule in
-                        RuleRow(rule: rule)
-                            .tag(rule.id)
+        VStack(alignment: .leading, spacing: 22) {
+            Text("手势列表")
+                .font(.largeTitle.bold())
+
+            HSplitView {
+                VStack(spacing: 0) {
+                    header
+                    List(selection: $selectedRuleID) {
+                        ForEach(store.rules) { rule in
+                            RuleRow(rule: rule)
+                                .tag(rule.id)
+                        }
+                    }
+                    .onChange(of: selectedRuleID) { _, newValue in
+                        draft = store.rules.first(where: { $0.id == newValue })
                     }
                 }
-                .onChange(of: selectedRuleID) { _, newValue in
-                    draft = store.rules.first(where: { $0.id == newValue })
+                .frame(minWidth: 310, idealWidth: 360)
+
+                if let draft {
+                    RuleEditor(rule: binding(for: draft))
+                        .frame(minWidth: 440)
+                } else {
+                    EmptySelectionView(
+                        title: "选择或新建手势",
+                        subtitle: "默认模板已自动创建，可直接修改动作与触发条件。",
+                        systemImage: "wand.and.stars"
+                    )
                 }
             }
-            .frame(minWidth: 310, idealWidth: 360)
-
-            if let draft {
-                RuleEditor(rule: binding(for: draft))
-                    .frame(minWidth: 440)
-            } else {
-                EmptySelectionView(
-                    title: "选择或新建手势",
-                    subtitle: "默认模板已自动创建，可直接修改动作与触发条件。",
-                    systemImage: "wand.and.stars"
-                )
-            }
         }
-        .navigationTitle("手势列表")
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.vertical, 24)
+        .padding(.leading, 61)
+        .padding(.trailing, 24)
         .onAppear {
             if selectedRuleID == nil {
                 selectedRuleID = store.rules.first?.id
@@ -489,24 +497,31 @@ private struct ApplicationsPage: View {
             Text("应用规则")
                 .font(.largeTitle.bold())
 
-            GroupBox("当前前台 App") {
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text(appEnvironment.frontmostApplication?.displayName ?? "未知")
-                            .font(.headline)
-                        Text(appEnvironment.frontmostApplication?.bundleIdentifier ?? "无 Bundle ID")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("加入排除列表") {
-                        if let app = appEnvironment.frontmostApplication {
-                            store.addExcludedApplication(app)
+            GroupBox("当前运行的 App") {
+                if appEnvironment.runningApplications.isEmpty {
+                    Text("暂无可选择的运行中 App。")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(4)
+                } else {
+                    List(appEnvironment.runningApplications) { app in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(app.displayName)
+                                    .font(.headline)
+                                Text(app.bundleIdentifier ?? app.path ?? "无标识")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button(isExcluded(app) ? "已加入" : "加入排除列表") {
+                                store.addExcludedApplication(app)
+                            }
+                            .disabled(isExcluded(app))
                         }
                     }
-                    .disabled(appEnvironment.frontmostApplication == nil)
+                    .frame(minHeight: 180, idealHeight: 240)
                 }
-                .padding(4)
             }
 
             GroupBox("排除全局手势的 App") {
@@ -540,6 +555,12 @@ private struct ApplicationsPage: View {
         }
         .padding(24)
     }
+
+    private func isExcluded(_ app: AppIdentity) -> Bool {
+        store.excludedApplications.contains { excluded in
+            excluded.id == app.id
+        }
+    }
 }
 
 private struct HUDSettingsPage: View {
@@ -562,16 +583,20 @@ private struct HUDSettingsPage: View {
                         Toggle("显示方向范围", isOn: hudBinding(\.showDirectionGuide))
                         Toggle("显示方向文字", isOn: hudBinding(\.showDirectionLabels))
                         Toggle("显示方向箭头", isOn: hudBinding(\.showDirectionArrows))
+                        SliderRow(title: "停留时间", value: settingsBinding(\.hudDismissDelay), range: 0.1...2, suffix: "秒")
+                        SliderRow(title: "淡出时间", value: settingsBinding(\.hudFadeDuration), range: 0.05...0.6, suffix: "秒", precision: 2)
                     }
                     .padding(4)
                 }
 
                 GroupBox("方向范围") {
                     VStack(alignment: .leading, spacing: 14) {
-                        SliderRow(title: "半径", value: hudBinding(\.directionGuideRadius), range: 48...128, suffix: "px")
+                        SliderRow(title: "半径", value: hudBinding(\.directionGuideRadius), range: 20...128, suffix: "px")
                         SliderRow(title: "跟随平滑度", value: hudBinding(\.directionGuideSmoothing), range: 0...0.6, suffix: "")
-                        SliderRow(title: "透明度", value: hudBinding(\.directionGuideOpacity), range: 0.2...1, suffix: "")
-                        SliderRow(title: "线宽", value: hudBinding(\.directionGuideLineWidth), range: 1...5, suffix: "px")
+                        SliderRow(title: "透明度", value: hudBinding(\.directionGuideOpacity), range: 0.05...1, suffix: "", precision: 2)
+                        SliderRow(title: "线宽", value: hudBinding(\.directionGuideLineWidth), range: 0.2...5, suffix: "px")
+                        SliderRow(title: "箭头大小", value: hudBinding(\.directionGuideArrowSize), range: 2...24, suffix: "px")
+                        SliderRow(title: "字体大小", value: hudBinding(\.directionGuideFontSize), range: 3...18, suffix: "px")
                     }
                     .padding(4)
                 }
@@ -716,16 +741,21 @@ private struct GeneralSettingsPage: View {
                     }
                     .padding(4)
                 }
+                .frame(maxWidth: .infinity)
 
                 GroupBox("手势") {
                     VStack(alignment: .leading, spacing: 14) {
                         Toggle("启用全局手势", isOn: settingsBinding(\.gesturesEnabled))
-                        SliderRow(title: "手势超时", value: settingsBinding(\.gestureTimeout), range: 0.8...6, suffix: "秒")
                         SliderRow(title: "触发阈值", value: settingsBinding(\.movementThreshold), range: 6...40, suffix: "px")
                         SliderRow(title: "方向最小距离", value: settingsBinding(\.segmentMinDistance), range: 8...60, suffix: "px")
+                        GestureThresholdPreview(
+                            movementThreshold: store.settings.movementThreshold,
+                            segmentMinDistance: store.settings.segmentMinDistance
+                        )
                     }
                     .padding(4)
                 }
+                .frame(maxWidth: .infinity)
 
                 GroupBox("系统") {
                     VStack(alignment: .leading, spacing: 14) {
@@ -735,8 +765,10 @@ private struct GeneralSettingsPage: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(4)
                 }
+                .frame(maxWidth: .infinity)
 
                 GroupBox("默认模板") {
                     HStack {
@@ -749,6 +781,7 @@ private struct GeneralSettingsPage: View {
                     }
                     .padding(4)
                 }
+                .frame(maxWidth: .infinity)
 
                 GroupBox("运行状态") {
                     VStack(alignment: .leading, spacing: 8) {
@@ -760,8 +793,12 @@ private struct GeneralSettingsPage: View {
                     }
                     .padding(4)
                 }
+                .frame(maxWidth: .infinity)
             }
-            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 32)
+            .padding(.trailing, 44)
+            .padding(.vertical, 32)
         }
     }
 
@@ -794,18 +831,90 @@ private struct GeneralSettingsPage: View {
     }
 }
 
+private struct GestureThresholdPreview: View {
+    let movementThreshold: Double
+    let segmentMinDistance: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("阈值预览", systemImage: "point.topleft.down.curvedto.point.bottomright.up")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("触发后每段方向至少移动 \(segmentMinDistance.formatted(.number.precision(.fractionLength(1)))) px")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            GeometryReader { proxy in
+                Canvas { context, size in
+                    drawPreview(in: size, context: &context)
+                }
+                .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(.secondary.opacity(0.14))
+                )
+            }
+            .frame(height: 104)
+        }
+        .padding(.top, 2)
+    }
+
+    private func drawPreview(in size: CGSize, context: inout GraphicsContext) {
+        let start = CGPoint(x: 52, y: size.height - 34)
+        let scale = max(1.15, min(2.1, (size.width - 120) / 92))
+        let triggerRadius = min(34, max(10, movementThreshold * scale * 0.42))
+        let segmentLength = min(size.width - 128, max(42, segmentMinDistance * scale))
+        let triggerEnd = CGPoint(x: start.x + triggerRadius, y: start.y)
+        let segmentEnd = CGPoint(x: triggerEnd.x + segmentLength, y: max(24, triggerEnd.y - segmentLength * 0.36))
+
+        var triggerCircle = Path()
+        triggerCircle.addEllipse(in: CGRect(
+            x: start.x - triggerRadius,
+            y: start.y - triggerRadius,
+            width: triggerRadius * 2,
+            height: triggerRadius * 2
+        ))
+        context.stroke(triggerCircle, with: .color(.blue.opacity(0.28)), style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
+        context.fill(triggerCircle, with: .color(.blue.opacity(0.06)))
+
+        var path = Path()
+        path.move(to: start)
+        path.addLine(to: triggerEnd)
+        path.addLine(to: segmentEnd)
+        context.stroke(path, with: .color(.blue), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+
+        context.fill(Path(ellipseIn: CGRect(x: start.x - 5, y: start.y - 5, width: 10, height: 10)), with: .color(.primary.opacity(0.8)))
+        context.fill(Path(ellipseIn: CGRect(x: triggerEnd.x - 4, y: triggerEnd.y - 4, width: 8, height: 8)), with: .color(.blue))
+        context.fill(Path(ellipseIn: CGRect(x: segmentEnd.x - 5, y: segmentEnd.y - 5, width: 10, height: 10)), with: .color(.green))
+
+        drawLabel("触发阈值", at: CGPoint(x: start.x, y: max(16, start.y - triggerRadius - 12)), context: &context, color: .blue)
+        drawLabel("方向最小距离", at: CGPoint(x: (triggerEnd.x + segmentEnd.x) / 2, y: min(size.height - 16, (triggerEnd.y + segmentEnd.y) / 2 + 24)), context: &context, color: .green)
+    }
+
+    private func drawLabel(_ title: String, at point: CGPoint, context: inout GraphicsContext, color: Color) {
+        let text = Text(title)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(color)
+        context.draw(text, at: point, anchor: .center)
+    }
+}
+
 private struct SliderRow: View {
     let title: String
     @Binding var value: Double
     let range: ClosedRange<Double>
     let suffix: String
+    var precision: Int = 1
 
     var body: some View {
         HStack {
             Text(title)
                 .frame(width: 110, alignment: .leading)
             Slider(value: $value, in: range)
-            Text("\(value.formatted(.number.precision(.fractionLength(1)))) \(suffix)")
+            Text("\(value.formatted(.number.precision(.fractionLength(precision)))) \(suffix)")
                 .font(.caption.monospacedDigit())
                 .frame(width: 70, alignment: .trailing)
         }

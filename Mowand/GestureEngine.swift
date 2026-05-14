@@ -5,7 +5,8 @@ import CoreGraphics
 import Foundation
 import SwiftUI
 
-struct GestureHUDSnapshot: Equatable {
+struct GestureHUDSnapshot: Equatable, Identifiable {
+    var id: UUID = UUID()
     var isVisible: Bool = false
     var points: [CGPoint] = []
     var timedPoints: [TimedGesturePoint] = []
@@ -17,6 +18,20 @@ struct GestureHUDSnapshot: Equatable {
     var matchedAction: String?
     var isError: Bool = false
     var isCancelled: Bool = false
+    var fadeStartedAt: Date?
+    var fadeDuration: TimeInterval = 0.15
+}
+
+struct GestureHUDPresentation: Equatable {
+    var snapshots: [GestureHUDSnapshot] = []
+
+    var isVisible: Bool {
+        snapshots.contains(where: \.isVisible)
+    }
+
+    var screenFrame: CGRect? {
+        snapshots.last(where: { $0.screenFrame != nil })?.screenFrame
+    }
 }
 
 struct TimedGesturePoint: Equatable {
@@ -27,8 +42,12 @@ struct TimedGesturePoint: Equatable {
 @MainActor
 final class GestureEngine: ObservableObject {
     private static let replayEventMarker: Int64 = 0x4D6F77616E64
+    private static let defaultHUDDismissDelay: TimeInterval = 0.9
+    private static let defaultHUDFadeDuration: TimeInterval = 0.15
+    private static let maxSessionPoints = 4096
+    private static let maxSessionDirections = 128
 
-    @Published private(set) var hud = GestureHUDSnapshot()
+    @Published private(set) var hud = GestureHUDPresentation()
     @Published private(set) var isRunning = false
 
     private weak var store: ConfigurationStore?
@@ -37,7 +56,7 @@ final class GestureEngine: ObservableObject {
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var session = GestureSession()
-    private var timeoutTask: Task<Void, Never>?
+    private var hudHideTasks: [UUID: Task<Void, Never>] = [:]
     private var replayedRightClickEventsRemaining = 0
 
     func configure(store: ConfigurationStore, appEnvironment: AppEnvironment, executor: ActionExecutor) {
@@ -86,8 +105,8 @@ final class GestureEngine: ObservableObject {
     }
 
     func stop() {
-        timeoutTask?.cancel()
-        timeoutTask = nil
+        hudHideTasks.values.forEach { $0.cancel() }
+        hudHideTasks.removeAll()
         if let tap {
             CGEvent.tapEnable(tap: tap, enable: false)
         }
@@ -97,7 +116,7 @@ final class GestureEngine: ObservableObject {
         tap = nil
         runLoopSource = nil
         session = GestureSession()
-        hud = GestureHUDSnapshot()
+        hud = GestureHUDPresentation()
         isRunning = false
     }
 
@@ -149,8 +168,8 @@ final class GestureEngine: ObservableObject {
     }
 
     private func beginSession(at location: CGPoint, button: MouseTriggerButton) {
-        guard let store else { return }
         session = GestureSession(
+            id: UUID(),
             isActive: true,
             hasExceededThreshold: false,
             button: button,
@@ -161,23 +180,13 @@ final class GestureEngine: ObservableObject {
             timedPoints: [TimedGesturePoint(point: location, timestamp: eventTimestamp())],
             directions: []
         )
-        timeoutTask?.cancel()
-        timeoutTask = Task { [weak self] in
-            let timeout = await MainActor.run { store.settings.gestureTimeout }
-            try? await Task.sleep(nanoseconds: UInt64(max(0.5, timeout) * 1_000_000_000))
-            await MainActor.run {
-                if self?.session.isActive == true {
-                    self?.cancelSession(message: "手势超时")
-                }
-            }
-        }
     }
 
     private func updateSession(at location: CGPoint) {
         guard session.isActive, let store else { return }
         recordMovement(to: location, store: store)
         guard session.hasExceededThreshold else { return }
-        updateHUD(message: "识别中")
+        updateHUD()
     }
 
     private func recordMovement(to location: CGPoint, store: ConfigurationStore) {
@@ -191,15 +200,23 @@ final class GestureEngine: ObservableObject {
         if let lastPoint = session.points.last {
             let distanceFromLastPoint = hypot(location.x - lastPoint.x, location.y - lastPoint.y)
             if distanceFromLastPoint >= 0.5 {
-                session.points.append(location)
-                session.timedPoints.append(TimedGesturePoint(point: location, timestamp: eventTimestamp()))
+                appendSessionPoint(location)
             }
         } else {
-            session.points.append(location)
-            session.timedPoints.append(TimedGesturePoint(point: location, timestamp: eventTimestamp()))
+            appendSessionPoint(location)
         }
 
         ingestMovement(to: location, minimumDistance: store.settings.segmentMinDistance)
+    }
+
+    private func appendSessionPoint(_ location: CGPoint) {
+        session.points.append(location)
+        session.timedPoints.append(TimedGesturePoint(point: location, timestamp: eventTimestamp()))
+
+        let overflow = session.points.count - Self.maxSessionPoints
+        guard overflow > 0 else { return }
+        session.points.removeFirst(overflow)
+        session.timedPoints.removeFirst(min(overflow, session.timedPoints.count))
     }
 
     private func ingestMovement(to location: CGPoint, minimumDistance: Double) {
@@ -246,13 +263,18 @@ final class GestureEngine: ObservableObject {
 
         if session.directions.last != direction {
             session.directions.append(direction)
+            trimSessionDirectionsIfNeeded()
         }
+    }
+
+    private func trimSessionDirectionsIfNeeded() {
+        let overflow = session.directions.count - Self.maxSessionDirections
+        guard overflow > 0 else { return }
+        session.directions.removeFirst(overflow)
     }
 
     private func endSession(event: CGEvent) -> Unmanaged<CGEvent>? {
         guard session.isActive else { return Unmanaged.passUnretained(event) }
-        timeoutTask?.cancel()
-        timeoutTask = nil
 
         defer {
             session = GestureSession()
@@ -263,28 +285,24 @@ final class GestureEngine: ObservableObject {
 
         guard session.hasExceededThreshold else {
             replayRightClick(at: session.startLocation)
-            hideHUDAfterDelay()
+            hideHUDAfterDelay(id: session.id)
             return nil
         }
 
-        updateHUD(message: "识别中")
-        let match = store.match(
-            directions: session.directions,
-            button: session.button,
-            modifiers: store.settings.triggerModifiers,
-            location: session.startLocation,
-            screenFrame: session.screenFrame,
-            frontmostApplication: appEnvironment?.frontmostApplication
-        )
+        updateHUD()
+        let match = currentMatch(store: store)
 
         if let match {
-            hud.matchedAction = match.rule.actionTitle
-            hud.message = match.rule.name
+            updateHUDSnapshot(id: session.id) { snapshot in
+                snapshot.matchedAction = match.rule.actionTitle
+                snapshot.message = match.rule.name
+            }
             Task { [weak executor] in
                 await executor?.execute(rule: match.rule)
             }
         } else {
-            hud = GestureHUDSnapshot(
+            upsertHUDSnapshot(GestureHUDSnapshot(
+                id: session.id,
                 isVisible: store.settings.hudEnabled,
                 points: session.points,
                 timedPoints: session.timedPoints,
@@ -302,26 +320,58 @@ final class GestureEngine: ObservableObject {
                 ),
                 matchedAction: session.directions.map(\.title).joined(separator: " -> "),
                 isError: true
-            )
+            ))
         }
-        hideHUDAfterDelay()
+        hideHUDAfterDelay(id: session.id)
         return nil
     }
 
     private func cancelSession(message: String) {
-        timeoutTask?.cancel()
-        timeoutTask = nil
+        let cancelledSession = session
+        if let store, store.settings.hudEnabled {
+            upsertHUDSnapshot(GestureHUDSnapshot(
+                id: cancelledSession.id,
+                isVisible: true,
+                points: cancelledSession.points,
+                timedPoints: cancelledSession.timedPoints,
+                screenFrame: cancelledSession.screenFrame,
+                directions: cancelledSession.directions,
+                currentDirection: currentDirection(),
+                style: store.settings.hudStyle,
+                message: message,
+                matchedAction: nil,
+                isError: false,
+                isCancelled: true
+            ))
+        }
         session = GestureSession()
-        hud.message = message
-        hud.isCancelled = true
-        hud.isError = false
-        hud.isVisible = true
-        hideHUDAfterDelay()
+        hideHUDAfterDelay(id: cancelledSession.id)
     }
 
-    private func updateHUD(message: String) {
+    private func updateHUD() {
         guard let store, store.settings.hudEnabled, !store.settings.hudOnlyForErrors else { return }
-        hud = GestureHUDSnapshot(
+        let match = currentMatch(store: store)
+        let isPotentialMatch = store.hasPotentialMatch(
+            directions: session.directions,
+            button: session.button,
+            modifiers: store.settings.triggerModifiers,
+            location: session.startLocation,
+            screenFrame: session.screenFrame,
+            frontmostApplication: appEnvironment?.frontmostApplication
+        )
+        let message: String
+        let matchedAction: String?
+
+        if let match {
+            message = match.rule.name
+            matchedAction = match.rule.actionTitle
+        } else {
+            message = isPotentialMatch ? "识别中" : "未分配手势"
+            matchedAction = nil
+        }
+
+        upsertHUDSnapshot(GestureHUDSnapshot(
+            id: session.id,
             isVisible: true,
             points: session.points,
             timedPoints: session.timedPoints,
@@ -330,19 +380,99 @@ final class GestureEngine: ObservableObject {
             currentDirection: currentDirection(),
             style: store.settings.hudStyle,
             message: message,
-            matchedAction: nil,
+            matchedAction: matchedAction,
             isError: false,
             isCancelled: false
+        ))
+    }
+
+    private func currentMatch(store: ConfigurationStore) -> GestureMatch? {
+        store.match(
+            directions: session.directions,
+            button: session.button,
+            modifiers: store.settings.triggerModifiers,
+            location: session.startLocation,
+            screenFrame: session.screenFrame,
+            frontmostApplication: appEnvironment?.frontmostApplication
         )
     }
 
-    private func hideHUDAfterDelay() {
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 900_000_000)
+    private func hideHUDAfterDelay(id: UUID) {
+        guard hud.snapshots.contains(where: { $0.id == id }) else { return }
+        hudHideTasks[id]?.cancel()
+        hudHideTasks[id] = Task { [weak self] in
+            do {
+                let dismissDelay = await MainActor.run {
+                    self?.store?.settings.hudDismissDelay ?? Self.defaultHUDDismissDelay
+                }
+                try await Task.sleep(nanoseconds: Self.nanoseconds(dismissDelay))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            let fadeDuration = await MainActor.run {
+                self?.store?.settings.hudFadeDuration ?? Self.defaultHUDFadeDuration
+            }
             await MainActor.run {
-                self?.hud = GestureHUDSnapshot()
+                guard !Task.isCancelled else { return }
+                self?.markHUDSnapshotFading(id: id, duration: fadeDuration)
+            }
+            do {
+                try await Task.sleep(nanoseconds: Self.nanoseconds(fadeDuration))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard !Task.isCancelled else { return }
+                self?.removeHUDSnapshot(id: id)
+                self?.hudHideTasks[id] = nil
             }
         }
+    }
+
+    private func upsertHUDSnapshot(_ snapshot: GestureHUDSnapshot) {
+        var presentation = hud
+        if let index = presentation.snapshots.firstIndex(where: { $0.id == snapshot.id }) {
+            presentation.snapshots[index] = snapshot
+        } else {
+            presentation.snapshots.append(snapshot)
+        }
+
+        if presentation.snapshots.count > 6 {
+            let overflow = presentation.snapshots.count - 6
+            let removedIDs = presentation.snapshots.prefix(overflow).map(\.id)
+            presentation.snapshots.removeFirst(overflow)
+            for id in removedIDs {
+                hudHideTasks[id]?.cancel()
+                hudHideTasks[id] = nil
+            }
+        }
+        hud = presentation
+    }
+
+    private func updateHUDSnapshot(id: UUID, update: (inout GestureHUDSnapshot) -> Void) {
+        var presentation = hud
+        guard let index = presentation.snapshots.firstIndex(where: { $0.id == id }) else { return }
+        update(&presentation.snapshots[index])
+        hud = presentation
+    }
+
+    private func markHUDSnapshotFading(id: UUID, duration: TimeInterval) {
+        updateHUDSnapshot(id: id) { snapshot in
+            snapshot.fadeStartedAt = Date()
+            snapshot.fadeDuration = duration
+        }
+    }
+
+    private func removeHUDSnapshot(id: UUID) {
+        var presentation = hud
+        presentation.snapshots.removeAll { $0.id == id }
+        hud = presentation
+    }
+
+    private static func nanoseconds(_ seconds: TimeInterval) -> UInt64 {
+        UInt64(max(0, seconds) * 1_000_000_000)
     }
 
     private func currentDirection() -> GestureDirection? {
@@ -401,6 +531,7 @@ final class GestureEngine: ObservableObject {
 }
 
 private struct GestureSession {
+    var id: UUID = UUID()
     var isActive: Bool = false
     var hasExceededThreshold: Bool = false
     var button: MouseTriggerButton = .right

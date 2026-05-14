@@ -2,7 +2,68 @@ import Foundation
 import SwiftUI
 
 struct HUDOverlay: View {
+    let presentation: GestureHUDPresentation
+
+    init(snapshot: GestureHUDSnapshot) {
+        self.presentation = GestureHUDPresentation(snapshots: [snapshot])
+    }
+
+    init(presentation: GestureHUDPresentation) {
+        self.presentation = presentation
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            if presentation.isVisible {
+                if hasFadingSnapshots {
+                    TimelineView(.animation) { timeline in
+                        snapshotStack(date: timeline.date)
+                    }
+                } else {
+                    snapshotStack(date: Date())
+                }
+            }
+        }
+        .ignoresSafeArea()
+    }
+
+    @ViewBuilder
+    private func snapshotStack(date: Date) -> some View {
+        ZStack {
+            let guideSnapshotID = activeGuideSnapshotID
+            ForEach(presentation.snapshots) { snapshot in
+                HUDSnapshotLayer(
+                    snapshot: snapshot,
+                    showsDirectionGuide: snapshot.id == guideSnapshotID
+                )
+                .opacity(opacity(for: snapshot, at: date))
+            }
+        }
+        .allowsHitTesting(false)
+        .transition(.opacity)
+    }
+
+    private func opacity(for snapshot: GestureHUDSnapshot, at date: Date) -> Double {
+        guard let fadeStartedAt = snapshot.fadeStartedAt else { return snapshot.isVisible ? 1 : 0 }
+        let elapsed = date.timeIntervalSince(fadeStartedAt)
+        let progress = min(max(elapsed / snapshot.fadeDuration, 0), 1)
+        return snapshot.isVisible ? 1 - progress : 0
+    }
+
+    private var activeGuideSnapshotID: UUID? {
+        presentation.snapshots.last(where: { $0.isVisible && $0.fadeStartedAt == nil })?.id
+    }
+
+    private var hasFadingSnapshots: Bool {
+        presentation.snapshots.contains { $0.fadeStartedAt != nil }
+    }
+}
+
+private struct HUDSnapshotLayer: View {
     let snapshot: GestureHUDSnapshot
+    let showsDirectionGuide: Bool
+
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         GeometryReader { proxy in
@@ -16,7 +77,7 @@ struct HUDOverlay: View {
                             .shadow(radius: 5)
                     }
 
-                    if snapshot.style.showDirectionGuide, let pointer = points.last {
+                    if showsDirectionGuide, snapshot.style.showDirectionGuide, let pointer = points.last {
                         SmoothDirectionGuideContainer(
                             style: snapshot.style,
                             currentDirection: snapshot.currentDirection,
@@ -49,18 +110,12 @@ struct HUDOverlay: View {
                         }
                     }
                     .padding(14)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(.white.opacity(0.18))
-                    )
+                    .background(glassPanelBackground)
                     .position(panelPosition(in: proxy.size))
                 }
                 .allowsHitTesting(false)
-                .transition(.opacity)
             }
         }
-        .ignoresSafeArea()
     }
 
     private var pathColor: Color {
@@ -73,6 +128,18 @@ struct HUDOverlay: View {
         if snapshot.isError { return "exclamationmark.triangle" }
         if snapshot.isCancelled { return "xmark.circle" }
         return "wand.and.stars"
+    }
+
+    private var glassPanelBackground: some View {
+        let fill = colorScheme == .dark ? Color.black.opacity(0.22) : Color.white.opacity(0.2)
+        let stroke = colorScheme == .dark ? Color.white.opacity(0.18) : Color.white.opacity(0.58)
+        return RoundedRectangle(cornerRadius: 8)
+            .fill(fill)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(stroke, lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.14), radius: 16, y: 8)
     }
 
     private func normalizedPoints(in size: CGSize) -> [CGPoint] {
@@ -182,11 +249,11 @@ private struct DirectionGuideView: View {
                     VStack(spacing: 1) {
                         if style.showDirectionArrows {
                             Image(systemName: direction.symbolName)
-                                .font(.system(size: isCurrent ? 17 : 13, weight: isCurrent ? .bold : .medium))
+                                .font(.system(size: arrowSize(isCurrent: isCurrent), weight: isCurrent ? .bold : .medium))
                         }
                         if style.showDirectionLabels {
                             Text(style.showDirectionArrows ? direction.textTitle : direction.title)
-                                .font(.system(size: isCurrent ? 11 : 9, weight: isCurrent ? .bold : .medium))
+                                .font(.system(size: labelSize(isCurrent: isCurrent), weight: isCurrent ? .bold : .medium))
                         }
                     }
                     .foregroundStyle(isCurrent ? highlightColor : normalColor)
@@ -203,6 +270,14 @@ private struct DirectionGuideView: View {
             x: center.x + cos(radians) * radius,
             y: center.y + sin(radians) * radius
         )
+    }
+
+    private func arrowSize(isCurrent: Bool) -> Double {
+        isCurrent ? style.directionGuideArrowSize * 1.3 : style.directionGuideArrowSize
+    }
+
+    private func labelSize(isCurrent: Bool) -> Double {
+        isCurrent ? style.directionGuideFontSize * 1.22 : style.directionGuideFontSize
     }
 }
 

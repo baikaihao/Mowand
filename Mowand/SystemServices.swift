@@ -3,6 +3,7 @@ import ApplicationServices
 import Carbon.HIToolbox
 import Combine
 import CoreGraphics
+import Darwin
 import Foundation
 import IOKit
 import ServiceManagement
@@ -36,24 +37,46 @@ final class PermissionMonitor: ObservableObject {
 @MainActor
 final class AppEnvironment: ObservableObject {
     @Published private(set) var frontmostApplication: AppIdentity?
+    @Published private(set) var runningApplications: [AppIdentity] = []
     @Published private(set) var launchAtLoginEnabled = false
 
-    private var observer: NSObjectProtocol?
+    private var observers: [NSObjectProtocol] = []
 
     func start() {
-        refreshFrontmostApplication()
+        refreshApplications()
         refreshLaunchAtLogin()
-        observer = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.refreshFrontmostApplication() }
+        let notificationCenter = NSWorkspace.shared.notificationCenter
+        let names: [NSNotification.Name] = [
+            NSWorkspace.didActivateApplicationNotification,
+            NSWorkspace.didLaunchApplicationNotification,
+            NSWorkspace.didTerminateApplicationNotification
+        ]
+        observers = names.map { name in
+            notificationCenter.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.refreshApplications() }
+            }
         }
     }
 
     func refreshFrontmostApplication() {
+        refreshApplications()
+    }
+
+    func refreshApplications() {
         frontmostApplication = NSWorkspace.shared.frontmostApplication.map(AppIdentity.init(application:))
+        runningApplications = NSWorkspace.shared.runningApplications
+            .filter { application in
+                application.activationPolicy == .regular
+                    && application.bundleIdentifier != Bundle.main.bundleIdentifier
+                    && application.bundleURL != nil
+            }
+            .map(AppIdentity.init(application:))
+            .uniquedByID()
+            .sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -71,6 +94,15 @@ final class AppEnvironment: ObservableObject {
 
     func refreshLaunchAtLogin() {
         launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
+    }
+}
+
+private extension Array where Element == AppIdentity {
+    func uniquedByID() -> [AppIdentity] {
+        var seen = Set<String>()
+        return filter { app in
+            seen.insert(app.id).inserted
+        }
     }
 }
 
@@ -154,7 +186,13 @@ final class ActionExecutor: ObservableObject {
         case .screenshot:
             postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_5), modifiers: ModifierFlags(command: true, shift: true))
         case .showDesktop:
-            showDesktop()
+            try sendDockNotification("com.apple.showdesktop.awake", fallback: {
+                postKeyStroke(keyCode: CGKeyCode(kVK_F11), modifiers: ModifierFlags())
+            })
+        case .missionControl:
+            try sendDockNotification("com.apple.expose.awake", fallback: {
+                postKeyStroke(keyCode: CGKeyCode(kVK_F3), modifiers: ModifierFlags())
+            })
         case .switchRecentApp:
             postKeyStroke(keyCode: CGKeyCode(kVK_Tab), modifiers: ModifierFlags(command: true))
         case .volumeUp:
@@ -195,15 +233,19 @@ final class ActionExecutor: ObservableObject {
         try process.run()
     }
 
-    private func showDesktop() {
-        for application in NSWorkspace.shared.runningApplications {
-            guard application.activationPolicy == .regular,
-                  application.processIdentifier != ProcessInfo.processInfo.processIdentifier,
-                  application.bundleIdentifier != "com.apple.finder" else {
-                continue
-            }
-            application.hide()
+    private func sendDockNotification(_ name: String, fallback: () -> Void) throws {
+        typealias CoreDockSendNotification = @convention(c) (CFString, Int32) -> Void
+        let frameworkPath = "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
+        guard let handle = dlopen(frameworkPath, RTLD_NOW) else {
+            fallback()
+            throw ActionExecutionError.failed("无法载入系统调度服务")
         }
+        guard let symbol = dlsym(handle, "CoreDockSendNotification") else {
+            fallback()
+            throw ActionExecutionError.failed("无法调用系统调度服务")
+        }
+        let sendNotification = unsafeBitCast(symbol, to: CoreDockSendNotification.self)
+        sendNotification(name as CFString, 0)
     }
 
     private func postKeyStroke(keyCode: CGKeyCode, modifiers: ModifierFlags) {
