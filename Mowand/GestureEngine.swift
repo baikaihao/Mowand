@@ -1,0 +1,415 @@
+import AppKit
+import Carbon.HIToolbox
+import Combine
+import CoreGraphics
+import Foundation
+import SwiftUI
+
+struct GestureHUDSnapshot: Equatable {
+    var isVisible: Bool = false
+    var points: [CGPoint] = []
+    var timedPoints: [TimedGesturePoint] = []
+    var screenFrame: CGRect?
+    var directions: [GestureDirection] = []
+    var currentDirection: GestureDirection?
+    var style: HUDSettings = HUDSettings()
+    var message: String = ""
+    var matchedAction: String?
+    var isError: Bool = false
+    var isCancelled: Bool = false
+}
+
+struct TimedGesturePoint: Equatable {
+    var point: CGPoint
+    var timestamp: TimeInterval
+}
+
+@MainActor
+final class GestureEngine: ObservableObject {
+    private static let replayEventMarker: Int64 = 0x4D6F77616E64
+
+    @Published private(set) var hud = GestureHUDSnapshot()
+    @Published private(set) var isRunning = false
+
+    private weak var store: ConfigurationStore?
+    private weak var appEnvironment: AppEnvironment?
+    private weak var executor: ActionExecutor?
+    private var tap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
+    private var session = GestureSession()
+    private var timeoutTask: Task<Void, Never>?
+    private var replayedRightClickEventsRemaining = 0
+
+    func configure(store: ConfigurationStore, appEnvironment: AppEnvironment, executor: ActionExecutor) {
+        self.store = store
+        self.appEnvironment = appEnvironment
+        self.executor = executor
+    }
+
+    func start() {
+        guard tap == nil else { return }
+        let mask =
+            (1 << CGEventType.rightMouseDown.rawValue)
+            | (1 << CGEventType.rightMouseDragged.rawValue)
+            | (1 << CGEventType.rightMouseUp.rawValue)
+            | (1 << CGEventType.otherMouseDown.rawValue)
+            | (1 << CGEventType.otherMouseDragged.rawValue)
+            | (1 << CGEventType.otherMouseUp.rawValue)
+            | (1 << CGEventType.keyDown.rawValue)
+
+        let callback: CGEventTapCallBack = { proxy, type, event, refcon in
+            guard let refcon else { return Unmanaged.passUnretained(event) }
+            let engine = Unmanaged<GestureEngine>.fromOpaque(refcon).takeUnretainedValue()
+            return engine.handle(proxy: proxy, type: type, event: event)
+        }
+
+        tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: CGEventMask(mask),
+            callback: callback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        )
+
+        guard let tap else {
+            isRunning = false
+            return
+        }
+
+        runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        if let runLoopSource {
+            CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        }
+        CGEvent.tapEnable(tap: tap, enable: true)
+        isRunning = true
+    }
+
+    func stop() {
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        if let tap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+        }
+        if let runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        }
+        tap = nil
+        runLoopSource = nil
+        session = GestureSession()
+        hud = GestureHUDSnapshot()
+        isRunning = false
+    }
+
+    private func handle(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            return Unmanaged.passUnretained(event)
+        }
+
+        if event.getIntegerValueField(.eventSourceUserData) == Self.replayEventMarker {
+            return Unmanaged.passUnretained(event)
+        }
+
+        if replayedRightClickEventsRemaining > 0, isRightClickReplayEvent(type) {
+            replayedRightClickEventsRemaining -= 1
+            return Unmanaged.passUnretained(event)
+        }
+
+        guard let store, store.settings.gesturesEnabled else {
+            return Unmanaged.passUnretained(event)
+        }
+
+        if type == .keyDown, event.getIntegerValueField(.keyboardEventKeycode) == kVK_Escape {
+            if session.isActive {
+                cancelSession(message: "已取消")
+                return nil
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
+        guard let button = button(for: type, event: event),
+              button == store.settings.triggerButton,
+              ModifierFlags(cgFlags: event.flags) == store.settings.triggerModifiers else {
+            return Unmanaged.passUnretained(event)
+        }
+
+        switch type {
+        case .rightMouseDown, .otherMouseDown:
+            beginSession(at: event.location, button: button)
+            return nil
+        case .rightMouseDragged, .otherMouseDragged:
+            updateSession(at: event.location)
+            return nil
+        case .rightMouseUp, .otherMouseUp:
+            return endSession(event: event)
+        default:
+            return Unmanaged.passUnretained(event)
+        }
+    }
+
+    private func beginSession(at location: CGPoint, button: MouseTriggerButton) {
+        guard let store else { return }
+        session = GestureSession(
+            isActive: true,
+            hasExceededThreshold: false,
+            button: button,
+            screenFrame: screenFrame(containing: location),
+            startLocation: location,
+            lastEventLocation: location,
+            points: [location],
+            timedPoints: [TimedGesturePoint(point: location, timestamp: eventTimestamp())],
+            directions: []
+        )
+        timeoutTask?.cancel()
+        timeoutTask = Task { [weak self] in
+            let timeout = await MainActor.run { store.settings.gestureTimeout }
+            try? await Task.sleep(nanoseconds: UInt64(max(0.5, timeout) * 1_000_000_000))
+            await MainActor.run {
+                if self?.session.isActive == true {
+                    self?.cancelSession(message: "手势超时")
+                }
+            }
+        }
+    }
+
+    private func updateSession(at location: CGPoint) {
+        guard session.isActive, let store else { return }
+        recordMovement(to: location, store: store)
+        guard session.hasExceededThreshold else { return }
+        updateHUD(message: "识别中")
+    }
+
+    private func recordMovement(to location: CGPoint, store: ConfigurationStore) {
+        let distanceFromStart = hypot(location.x - session.startLocation.x, location.y - session.startLocation.y)
+        if !session.hasExceededThreshold, distanceFromStart >= store.settings.movementThreshold {
+            session.hasExceededThreshold = true
+        }
+
+        guard session.hasExceededThreshold else { return }
+
+        if let lastPoint = session.points.last {
+            let distanceFromLastPoint = hypot(location.x - lastPoint.x, location.y - lastPoint.y)
+            if distanceFromLastPoint >= 0.5 {
+                session.points.append(location)
+                session.timedPoints.append(TimedGesturePoint(point: location, timestamp: eventTimestamp()))
+            }
+        } else {
+            session.points.append(location)
+            session.timedPoints.append(TimedGesturePoint(point: location, timestamp: eventTimestamp()))
+        }
+
+        ingestMovement(to: location, minimumDistance: store.settings.segmentMinDistance)
+    }
+
+    private func ingestMovement(to location: CGPoint, minimumDistance: Double) {
+        let delta = CGSize(
+            width: location.x - session.lastEventLocation.x,
+            height: location.y - session.lastEventLocation.y
+        )
+        let distance = hypot(delta.width, delta.height)
+        defer {
+            session.lastEventLocation = location
+        }
+
+        guard distance >= 1, let direction = GestureDirection.from(delta: delta) else { return }
+
+        if session.directions.last == direction {
+            session.pendingDirection = nil
+            session.pendingDistance = 0
+            return
+        }
+
+        if session.pendingDirection == direction {
+            session.pendingDistance += distance
+        } else {
+            session.pendingDirection = direction
+            session.pendingDistance = distance
+        }
+
+        guard session.pendingDistance >= minimumDistance else { return }
+
+        appendConfirmedDirection(direction)
+        session.pendingDirection = nil
+        session.pendingDistance = 0
+    }
+
+    private func appendConfirmedDirection(_ direction: GestureDirection) {
+        if session.directions.last == direction { return }
+
+        if session.directions.count >= 2,
+           let previous = session.directions.dropLast().last,
+           let bridge = session.directions.last,
+           bridge.isDiagonalBridge(from: previous, to: direction) {
+            session.directions.removeLast()
+        }
+
+        if session.directions.last != direction {
+            session.directions.append(direction)
+        }
+    }
+
+    private func endSession(event: CGEvent) -> Unmanaged<CGEvent>? {
+        guard session.isActive else { return Unmanaged.passUnretained(event) }
+        timeoutTask?.cancel()
+        timeoutTask = nil
+
+        defer {
+            session = GestureSession()
+        }
+
+        guard let store else { return nil }
+        recordMovement(to: event.location, store: store)
+
+        guard session.hasExceededThreshold else {
+            replayRightClick(at: session.startLocation)
+            hideHUDAfterDelay()
+            return nil
+        }
+
+        updateHUD(message: "识别中")
+        let match = store.match(
+            directions: session.directions,
+            button: session.button,
+            modifiers: store.settings.triggerModifiers,
+            location: session.startLocation,
+            screenFrame: session.screenFrame,
+            frontmostApplication: appEnvironment?.frontmostApplication
+        )
+
+        if let match {
+            hud.matchedAction = match.rule.actionTitle
+            hud.message = match.rule.name
+            Task { [weak executor] in
+                await executor?.execute(rule: match.rule)
+            }
+        } else {
+            hud = GestureHUDSnapshot(
+                isVisible: store.settings.hudEnabled,
+                points: session.points,
+                timedPoints: session.timedPoints,
+                screenFrame: session.screenFrame,
+                directions: session.directions,
+                currentDirection: currentDirection(),
+                style: store.settings.hudStyle,
+                message: store.matchFailureMessage(
+                    directions: session.directions,
+                    button: session.button,
+                    modifiers: store.settings.triggerModifiers,
+                    location: session.startLocation,
+                    screenFrame: session.screenFrame,
+                    frontmostApplication: appEnvironment?.frontmostApplication
+                ),
+                matchedAction: session.directions.map(\.title).joined(separator: " -> "),
+                isError: true
+            )
+        }
+        hideHUDAfterDelay()
+        return nil
+    }
+
+    private func cancelSession(message: String) {
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        session = GestureSession()
+        hud.message = message
+        hud.isCancelled = true
+        hud.isError = false
+        hud.isVisible = true
+        hideHUDAfterDelay()
+    }
+
+    private func updateHUD(message: String) {
+        guard let store, store.settings.hudEnabled, !store.settings.hudOnlyForErrors else { return }
+        hud = GestureHUDSnapshot(
+            isVisible: true,
+            points: session.points,
+            timedPoints: session.timedPoints,
+            screenFrame: session.screenFrame,
+            directions: session.directions,
+            currentDirection: currentDirection(),
+            style: store.settings.hudStyle,
+            message: message,
+            matchedAction: nil,
+            isError: false,
+            isCancelled: false
+        )
+    }
+
+    private func hideHUDAfterDelay() {
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            await MainActor.run {
+                self?.hud = GestureHUDSnapshot()
+            }
+        }
+    }
+
+    private func currentDirection() -> GestureDirection? {
+        guard session.hasExceededThreshold else { return nil }
+        if let pendingDirection = session.pendingDirection {
+            return pendingDirection
+        }
+        guard let current = session.points.last else { return session.directions.last }
+        return GestureDirection.from(
+            delta: CGSize(width: current.x - session.lastEventLocation.x, height: current.y - session.lastEventLocation.y)
+        ) ?? session.directions.last
+    }
+
+    private func replayRightClick(at location: CGPoint) {
+        guard session.button == .right else { return }
+        let source = CGEventSource(stateID: .hidSystemState)
+        let down = CGEvent(mouseEventSource: source, mouseType: .rightMouseDown, mouseCursorPosition: location, mouseButton: .right)
+        let up = CGEvent(mouseEventSource: source, mouseType: .rightMouseUp, mouseCursorPosition: location, mouseButton: .right)
+        down?.setIntegerValueField(.eventSourceUserData, value: Self.replayEventMarker)
+        up?.setIntegerValueField(.eventSourceUserData, value: Self.replayEventMarker)
+        replayedRightClickEventsRemaining = 2
+        down?.post(tap: .cghidEventTap)
+        up?.post(tap: .cghidEventTap)
+    }
+
+    private func isRightClickReplayEvent(_ type: CGEventType) -> Bool {
+        type == .rightMouseDown || type == .rightMouseUp
+    }
+
+    private func screenFrame(containing location: CGPoint) -> CGRect {
+        NSScreen.screens.first(where: { $0.frame.contains(location) })?.frame
+            ?? NSScreen.main?.frame
+            ?? CGRect(origin: .zero, size: CGSize(width: CGDisplayPixelsWide(CGMainDisplayID()), height: CGDisplayPixelsHigh(CGMainDisplayID())))
+    }
+
+    private func eventTimestamp() -> TimeInterval {
+        ProcessInfo.processInfo.systemUptime
+    }
+
+    private func button(for type: CGEventType, event: CGEvent) -> MouseTriggerButton? {
+        switch type {
+        case .rightMouseDown, .rightMouseDragged, .rightMouseUp:
+            return .right
+        case .otherMouseDown, .otherMouseDragged, .otherMouseUp:
+            let buttonNumber = event.getIntegerValueField(.mouseEventButtonNumber)
+            switch buttonNumber {
+            case 2: return .middle
+            case 3: return .button4
+            case 4: return .button5
+            default: return nil
+            }
+        default:
+            return nil
+        }
+    }
+}
+
+private struct GestureSession {
+    var isActive: Bool = false
+    var hasExceededThreshold: Bool = false
+    var button: MouseTriggerButton = .right
+    var screenFrame: CGRect = .zero
+    var startLocation: CGPoint = .zero
+    var lastEventLocation: CGPoint = .zero
+    var pendingDirection: GestureDirection?
+    var pendingDistance: Double = 0
+    var points: [CGPoint] = []
+    var timedPoints: [TimedGesturePoint] = []
+    var directions: [GestureDirection] = []
+}
