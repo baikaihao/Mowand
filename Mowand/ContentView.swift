@@ -1141,7 +1141,7 @@ private struct AboutSection: View {
 }
 
 private struct FeedbackSection: View {
-    private let feedbackIssueURL = URL(string: "https://github.com/OWNER/REPO/issues/new")!
+    private let feedbackIssueURL = URL(string: "https://github.com/baikaihao/Mowand/issues/new")!
 
     var body: some View {
         GroupBox("反馈") {
