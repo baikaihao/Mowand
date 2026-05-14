@@ -361,6 +361,7 @@ enum SystemAction: String, Codable, CaseIterable, Identifiable {
     case screenshotSelection
     case screenshot
     case showDesktop
+    case missionControl
     case switchRecentApp
     case volumeUp
     case volumeDown
@@ -380,6 +381,7 @@ enum SystemAction: String, Codable, CaseIterable, Identifiable {
         case .screenshotSelection: "选区截图（拖拽区域，⌘⇧4）"
         case .screenshot: "截图工具（完整面板，⌘⇧5）"
         case .showDesktop: "显示桌面"
+        case .missionControl: "调度中心"
         case .switchRecentApp: "切换最近使用的 App"
         case .volumeUp: "提高音量"
         case .volumeDown: "降低音量"
@@ -399,6 +401,7 @@ enum SystemAction: String, Codable, CaseIterable, Identifiable {
         case .screenshotSelection: "crop"
         case .screenshot: "camera.viewfinder"
         case .showDesktop: "rectangle.dashed"
+        case .missionControl: "rectangle.3.group"
         case .switchRecentApp: "app.connected.to.app.below.fill"
         case .volumeUp: "speaker.wave.3"
         case .volumeDown: "speaker.wave.1"
@@ -546,10 +549,11 @@ struct AppSettings: Codable, Hashable {
     var gesturesEnabled: Bool = true
     var hudEnabled: Bool = true
     var hudOnlyForErrors: Bool = false
+    var hudDismissDelay: TimeInterval = 0.9
+    var hudFadeDuration: TimeInterval = 0.15
     var hudStyle: HUDSettings = HUDSettings()
     var triggerButton: MouseTriggerButton = .right
     var triggerModifiers: ModifierFlags = ModifierFlags()
-    var gestureTimeout: TimeInterval = 2.5
     var movementThreshold: Double = 12
     var segmentMinDistance: Double = 18
     var launchAtLogin: Bool = false
@@ -559,10 +563,11 @@ struct AppSettings: Codable, Hashable {
         case gesturesEnabled
         case hudEnabled
         case hudOnlyForErrors
+        case hudDismissDelay
+        case hudFadeDuration
         case hudStyle
         case triggerButton
         case triggerModifiers
-        case gestureTimeout
         case movementThreshold
         case segmentMinDistance
         case launchAtLogin
@@ -577,10 +582,11 @@ struct AppSettings: Codable, Hashable {
         gesturesEnabled = try container.decodeIfPresent(Bool.self, forKey: .gesturesEnabled) ?? defaults.gesturesEnabled
         hudEnabled = try container.decodeIfPresent(Bool.self, forKey: .hudEnabled) ?? defaults.hudEnabled
         hudOnlyForErrors = try container.decodeIfPresent(Bool.self, forKey: .hudOnlyForErrors) ?? defaults.hudOnlyForErrors
+        hudDismissDelay = try container.decodeIfPresent(TimeInterval.self, forKey: .hudDismissDelay) ?? defaults.hudDismissDelay
+        hudFadeDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .hudFadeDuration) ?? defaults.hudFadeDuration
         hudStyle = try container.decodeIfPresent(HUDSettings.self, forKey: .hudStyle) ?? defaults.hudStyle
         triggerButton = try container.decodeIfPresent(MouseTriggerButton.self, forKey: .triggerButton) ?? defaults.triggerButton
         triggerModifiers = try container.decodeIfPresent(ModifierFlags.self, forKey: .triggerModifiers) ?? defaults.triggerModifiers
-        gestureTimeout = try container.decodeIfPresent(TimeInterval.self, forKey: .gestureTimeout) ?? defaults.gestureTimeout
         movementThreshold = try container.decodeIfPresent(Double.self, forKey: .movementThreshold) ?? defaults.movementThreshold
         segmentMinDistance = try container.decodeIfPresent(Double.self, forKey: .segmentMinDistance) ?? defaults.segmentMinDistance
         launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? defaults.launchAtLogin
@@ -631,6 +637,8 @@ struct HUDSettings: Codable, Hashable {
     var directionGuideSmoothing: Double = 0.2
     var directionGuideOpacity: Double = 0.72
     var directionGuideLineWidth: Double = 1.5
+    var directionGuideArrowSize: Double = 13
+    var directionGuideFontSize: Double = 9
     var highlightedColor: HUDColorPreset = .blue
     var normalLineColor: HUDColorPreset = .white
     var showDirectionLabels: Bool = true
@@ -644,6 +652,8 @@ struct HUDSettings: Codable, Hashable {
         case directionGuideFollowDelay
         case directionGuideOpacity
         case directionGuideLineWidth
+        case directionGuideArrowSize
+        case directionGuideFontSize
         case highlightedColor
         case normalLineColor
         case showDirectionLabels
@@ -663,6 +673,8 @@ struct HUDSettings: Codable, Hashable {
             ?? defaults.directionGuideSmoothing
         directionGuideOpacity = try container.decodeIfPresent(Double.self, forKey: .directionGuideOpacity) ?? defaults.directionGuideOpacity
         directionGuideLineWidth = try container.decodeIfPresent(Double.self, forKey: .directionGuideLineWidth) ?? defaults.directionGuideLineWidth
+        directionGuideArrowSize = try container.decodeIfPresent(Double.self, forKey: .directionGuideArrowSize) ?? defaults.directionGuideArrowSize
+        directionGuideFontSize = try container.decodeIfPresent(Double.self, forKey: .directionGuideFontSize) ?? defaults.directionGuideFontSize
         highlightedColor = try container.decodeIfPresent(HUDColorPreset.self, forKey: .highlightedColor) ?? defaults.highlightedColor
         normalLineColor = try container.decodeIfPresent(HUDColorPreset.self, forKey: .normalLineColor) ?? defaults.normalLineColor
         showDirectionLabels = try container.decodeIfPresent(Bool.self, forKey: .showDirectionLabels) ?? defaults.showDirectionLabels
@@ -677,6 +689,8 @@ struct HUDSettings: Codable, Hashable {
         try container.encode(directionGuideSmoothing, forKey: .directionGuideSmoothing)
         try container.encode(directionGuideOpacity, forKey: .directionGuideOpacity)
         try container.encode(directionGuideLineWidth, forKey: .directionGuideLineWidth)
+        try container.encode(directionGuideArrowSize, forKey: .directionGuideArrowSize)
+        try container.encode(directionGuideFontSize, forKey: .directionGuideFontSize)
         try container.encode(highlightedColor, forKey: .highlightedColor)
         try container.encode(normalLineColor, forKey: .normalLineColor)
         try container.encode(showDirectionLabels, forKey: .showDirectionLabels)

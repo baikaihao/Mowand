@@ -118,6 +118,39 @@ final class ConfigurationStore: ObservableObject {
         return nil
     }
 
+    func hasPotentialMatch(
+        directions: [GestureDirection],
+        button: MouseTriggerButton,
+        modifiers: ModifierFlags,
+        location: CGPoint,
+        screenFrame: CGRect,
+        frontmostApplication: AppIdentity?
+    ) -> Bool {
+        guard !directions.isEmpty else { return true }
+
+        let enabledRules = configuration.rules.filter {
+            $0.isEnabled
+                && $0.triggerButton == button
+                && $0.modifiers == modifiers
+                && $0.directions.count > directions.count
+                && $0.directions.starts(with: directions)
+                && $0.region.contains(location: location, in: screenFrame)
+        }
+
+        if let frontmostApplication,
+           enabledRules.contains(where: { rule in
+               rule.scope.bundleIdentifier == frontmostApplication.bundleIdentifier
+                   || (rule.scope.bundleIdentifier == nil && rule.scope.title == frontmostApplication.displayName)
+           }) {
+            return true
+        }
+
+        let isExcluded = frontmostApplication.map(isApplicationExcluded) ?? false
+        guard !isExcluded else { return false }
+
+        return enabledRules.contains(where: isGlobalRule)
+    }
+
     func matchFailureMessage(
         directions: [GestureDirection],
         button: MouseTriggerButton,
