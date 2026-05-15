@@ -1112,13 +1112,17 @@ private struct GeneralSettingsPage: View {
 }
 
 private struct AboutSection: View {
+    private let iconSize: CGFloat = 128
+    private let iconCornerRadius: CGFloat = 29
+
     var body: some View {
         VStack(spacing: 8) {
-            Image(nsImage: NSApplication.shared.applicationIconImage)
+            Image("MowandAppIcon")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 88, height: 88)
-                .shadow(color: .black.opacity(0.12), radius: 8, y: 4)
+                .frame(width: iconSize, height: iconSize)
+                .clipShape(RoundedRectangle(cornerRadius: iconCornerRadius, style: .continuous))
+                .shadow(color: .black.opacity(0.14), radius: 12, y: 6)
 
             Text("版本 \(appVersion)")
                 .font(.headline)
