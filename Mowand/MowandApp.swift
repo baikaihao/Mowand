@@ -1,7 +1,11 @@
+import Combine
 import SwiftUI
 
 @main
 struct MowandApp: App {
+    private static let mainWindowID = "main"
+
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var store = ConfigurationStore()
     @StateObject private var permissions = PermissionMonitor()
     @StateObject private var appEnvironment = AppEnvironment()
@@ -9,9 +13,10 @@ struct MowandApp: App {
     @StateObject private var actionExecutor = ActionExecutor()
     @StateObject private var rangeSelector = RangeSelectionCoordinator()
     @State private var hudWindowController: HUDWindowController?
+    @State private var menuBarController: MenuBarController?
 
     var body: some Scene {
-        WindowGroup("Mowand") {
+        WindowGroup("Mowand", id: Self.mainWindowID) {
             ContentView()
                 .environmentObject(store)
                 .environmentObject(permissions)
@@ -39,40 +44,18 @@ struct MowandApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
+    }
 
-        MenuBarExtra("Mowand", systemImage: "wand.and.stars") {
-            Toggle("启用全局手势", isOn: Binding(
-                get: { store.settings.gesturesEnabled },
-                set: { enabled in store.updateSettings { $0.gesturesEnabled = enabled } }
-            ))
-
-            Button("打开设置") {
-                NSApp.activate(ignoringOtherApps: true)
-                if let window = NSApp.windows.first(where: { $0.title == "Mowand" }) {
-                    window.makeKeyAndOrderFront(nil)
-                }
+    private func openMainWindow() {
+        if let window = NSApp.windows.first(where: { $0.title == "Mowand" }) {
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
             }
-
-            Divider()
-
-            Label(
-                permissions.accessibilityGranted ? "辅助功能权限已开启" : "辅助功能权限未开启",
-                systemImage: permissions.accessibilityGranted ? "checkmark.circle" : "exclamationmark.triangle"
-            )
-
-            if !permissions.accessibilityGranted {
-                Button("打开辅助功能授权") {
-                    permissions.requestAccessibilityPermission()
-                }
-            }
-
-            Divider()
-
-            Button("退出 Mowand") {
-                store.saveNow()
-                NSApp.terminate(nil)
-            }
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            openWindow(id: Self.mainWindowID)
         }
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @MainActor
@@ -84,6 +67,16 @@ struct MowandApp: App {
             gestureEngine.start()
         }
         hudWindowController = HUDWindowController(engine: gestureEngine)
+        if menuBarController == nil {
+            menuBarController = MenuBarController(
+                store: store,
+                openMowand: openMainWindow,
+                quitMowand: {
+                    store.saveNow()
+                    NSApp.terminate(nil)
+                }
+            )
+        }
 
         if store.settings.showDockIcon {
             NSApp.setActivationPolicy(.regular)
@@ -105,4 +98,79 @@ private struct AppLifecycleView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+@MainActor
+private final class MenuBarController: NSObject {
+    private let store: ConfigurationStore
+    private let openMowand: () -> Void
+    private let quitMowand: () -> Void
+    private let statusItem: NSStatusItem
+    private let gestureMenuItem = NSMenuItem()
+    private var cancellables: Set<AnyCancellable> = []
+
+    init(store: ConfigurationStore, openMowand: @escaping () -> Void, quitMowand: @escaping () -> Void) {
+        self.store = store
+        self.openMowand = openMowand
+        self.quitMowand = quitMowand
+        self.statusItem = NSStatusBar.system.statusItem(withLength: 14)
+        super.init()
+        configureStatusItem()
+        configureMenu()
+        updateGestureMenuTitle()
+
+        store.$configuration
+            .sink { [weak self] _ in
+                self?.updateGestureMenuTitle()
+            }
+            .store(in: &cancellables)
+    }
+
+    deinit {
+        NSStatusBar.system.removeStatusItem(statusItem)
+    }
+
+    private func configureStatusItem() {
+        statusItem.length = 14
+        statusItem.button?.image = NSImage(systemSymbolName: "wand.and.stars", accessibilityDescription: "Mowand")
+        statusItem.button?.imagePosition = .imageOnly
+    }
+
+    private func configureMenu() {
+        let menu = NSMenu()
+
+        let openItem = NSMenuItem(title: "打开Mowand", action: #selector(openMowandAction), keyEquivalent: "")
+        openItem.target = self
+        menu.addItem(openItem)
+
+        gestureMenuItem.action = #selector(toggleGesturesAction)
+        gestureMenuItem.target = self
+        menu.addItem(gestureMenuItem)
+
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(title: "退出Mowand", action: #selector(quitMowandAction), keyEquivalent: "")
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        statusItem.menu = menu
+    }
+
+    private func updateGestureMenuTitle() {
+        gestureMenuItem.title = store.settings.gesturesEnabled ? "关闭全局手势" : "开启全局手势"
+    }
+
+    @objc private func openMowandAction() {
+        openMowand()
+    }
+
+    @objc private func toggleGesturesAction() {
+        store.updateSettings { settings in
+            settings.gesturesEnabled.toggle()
+        }
+    }
+
+    @objc private func quitMowandAction() {
+        quitMowand()
+    }
 }
