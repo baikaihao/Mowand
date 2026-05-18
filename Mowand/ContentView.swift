@@ -6,7 +6,7 @@ struct ContentView: View {
     @EnvironmentObject private var permissions: PermissionMonitor
 
     @State private var selectedPage: SettingsPage = .gestures
-    @State private var selectedRuleID: GestureRule.ID?
+    @State private var selectedRuleIDs: Set<GestureRule.ID> = []
 
     var body: some View {
         NavigationSplitView {
@@ -16,7 +16,7 @@ struct ContentView: View {
             Group {
                 switch selectedPage {
                 case .gestures:
-                    GesturesPage(selectedRuleID: $selectedRuleID)
+                    GesturesPage(selectedRuleIDs: $selectedRuleIDs)
                 case .hud:
                     HUDSettingsPage()
                 case .applications:
@@ -85,7 +85,7 @@ private struct Sidebar: View {
 
                 Text("魔杖")
                     .font(.headline)
-                Text("按规则设定的鼠标按钮拖动绘制八方向手势")
+                Text("按通用设置里的鼠标按钮拖动绘制八方向手势")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -147,10 +147,11 @@ private struct AuthorizationButtonStyle: ButtonStyle {
 private struct GesturesPage: View {
     @EnvironmentObject private var store: ConfigurationStore
     @EnvironmentObject private var rangeSelector: RangeSelectionCoordinator
-    @Binding var selectedRuleID: GestureRule.ID?
+    @Binding var selectedRuleIDs: Set<GestureRule.ID>
 
     @State private var draft: GestureRule?
     @State private var showingDeleteConfirmation = false
+    @State private var focusedRuleID: GestureRule.ID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -160,25 +161,31 @@ private struct GesturesPage: View {
             HSplitView {
                 VStack(spacing: 0) {
                     header
-                    List(selection: $selectedRuleID) {
+                    List(selection: $selectedRuleIDs) {
                         ForEach(store.rules) { rule in
                             RuleRow(rule: rule)
                                 .tag(rule.id)
                         }
                     }
-                    .onChange(of: selectedRuleID) { _, newValue in
-                        draft = store.rules.first(where: { $0.id == newValue })
+                    .onChange(of: selectedRuleIDs) { oldValue, newValue in
+                        updateDraftAfterSelectionChange(oldSelection: oldValue, newSelection: newValue)
                     }
                 }
                 .frame(minWidth: 310, idealWidth: 360)
 
-                if let draft {
+                if selectedRuleIDs.count > 1 {
+                    EmptySelectionView(
+                        title: "已选择 \(selectedRuleIDs.count) 个手势",
+                        subtitle: "可使用删除按钮批量删除，单击一个手势继续编辑。",
+                        systemImage: "checklist"
+                    )
+                } else if let draft {
                     RuleEditor(rule: binding(for: draft))
                         .frame(minWidth: 440)
                 } else {
                     EmptySelectionView(
                         title: "选择或新建手势",
-                        subtitle: "默认模板已自动创建，可直接修改动作与触发条件。",
+                        subtitle: "默认模板已自动创建，可直接修改动作、作用域和手势模板。",
                         systemImage: "wand.and.stars"
                     )
                 }
@@ -189,10 +196,16 @@ private struct GesturesPage: View {
         .padding(.leading, 61)
         .padding(.trailing, 24)
         .onAppear {
-            if selectedRuleID == nil {
-                selectedRuleID = store.rules.first?.id
+            pruneSelection()
+            if selectedRuleIDs.isEmpty, let firstRuleID = store.rules.first?.id {
+                selectedRuleIDs = [firstRuleID]
+                focusedRuleID = firstRuleID
             }
-            draft = store.rules.first(where: { $0.id == selectedRuleID })
+            syncDraftToFocusedRule()
+        }
+        .onChange(of: store.rules) {
+            pruneSelection()
+            syncDraftToFocusedRule()
         }
     }
 
@@ -208,23 +221,30 @@ private struct GesturesPage: View {
                     actions: [ActionStep(type: .system(.refresh))]
                 )
                 store.upsertRule(rule)
-                selectedRuleID = rule.id
+                selectedRuleIDs = [rule.id]
+                focusedRuleID = rule.id
                 draft = rule
             } label: {
                 Label("新增", systemImage: "plus")
             }
             Button {
-                if selectedRule != nil { showingDeleteConfirmation = true }
+                if !selectedRules.isEmpty { showingDeleteConfirmation = true }
             } label: {
                 Label("删除", systemImage: "trash")
             }
-            .disabled(selectedRule == nil)
+            .disabled(selectedRules.isEmpty)
             .confirmationDialog("删除手势？", isPresented: $showingDeleteConfirmation) {
                 Button("删除", role: .destructive) {
-                    if let selectedRule {
-                        store.deleteRule(selectedRule)
-                        selectedRuleID = store.rules.first?.id
-                        draft = store.rules.first
+                    let deletedRuleIDs = Set(selectedRules.map(\.id))
+                    selectedRules.forEach(store.deleteRule)
+                    if let nextRule = store.rules.first(where: { !deletedRuleIDs.contains($0.id) }) {
+                        selectedRuleIDs = [nextRule.id]
+                        focusedRuleID = nextRule.id
+                        draft = nextRule
+                    } else {
+                        selectedRuleIDs = []
+                        focusedRuleID = nil
+                        draft = nil
                     }
                 }
             }
@@ -232,8 +252,8 @@ private struct GesturesPage: View {
         .padding(12)
     }
 
-    private var selectedRule: GestureRule? {
-        store.rules.first(where: { $0.id == selectedRuleID })
+    private var selectedRules: [GestureRule] {
+        store.rules.filter { selectedRuleIDs.contains($0.id) }
     }
 
     private func binding(for rule: GestureRule) -> Binding<GestureRule> {
@@ -242,8 +262,56 @@ private struct GesturesPage: View {
             set: { updated in
                 store.upsertRule(updated)
                 draft = updated
+                focusedRuleID = updated.id
             }
         )
+    }
+
+    private func updateDraftAfterSelectionChange(
+        oldSelection: Set<GestureRule.ID>,
+        newSelection: Set<GestureRule.ID>
+    ) {
+        focusedRuleID = focusedRuleID(from: oldSelection, to: newSelection)
+        syncDraftToFocusedRule()
+    }
+
+    private func focusedRuleID(
+        from oldSelection: Set<GestureRule.ID>,
+        to newSelection: Set<GestureRule.ID>
+    ) -> GestureRule.ID? {
+        if newSelection.count == 1 {
+            return newSelection.first
+        }
+
+        if let newlySelectedRuleID = newSelection.subtracting(oldSelection).first {
+            return newlySelectedRuleID
+        }
+
+        if let focusedRuleID, newSelection.contains(focusedRuleID) {
+            return focusedRuleID
+        }
+
+        return store.rules.first(where: { newSelection.contains($0.id) })?.id
+    }
+
+    private func pruneSelection() {
+        let ruleIDs = Set(store.rules.map(\.id))
+        selectedRuleIDs = selectedRuleIDs.intersection(ruleIDs)
+        if let focusedRuleID, !selectedRuleIDs.contains(focusedRuleID) {
+            self.focusedRuleID = selectedRuleIDs.first
+        }
+    }
+
+    private func syncDraftToFocusedRule() {
+        guard selectedRuleIDs.count == 1,
+              let ruleID = focusedRuleID ?? selectedRuleIDs.first,
+              let rule = store.rules.first(where: { $0.id == ruleID }) else {
+            draft = nil
+            return
+        }
+
+        focusedRuleID = rule.id
+        draft = rule
     }
 }
 
@@ -286,9 +354,13 @@ private struct RuleEditor: View {
                     Text("动作链")
                         .frame(width: 72, alignment: .leading)
                     Picker("动作链", selection: assignedSystemActionBinding) {
-                        ForEach(SystemAction.allCases) { action in
-                            Label(action.title, systemImage: action.symbolName)
-                                .tag(action)
+                        ForEach(SystemActionCategory.allCases) { category in
+                            Section(category.title) {
+                                ForEach(category.actions) { action in
+                                    Label(action.title, systemImage: action.symbolName)
+                                        .tag(action)
+                                }
+                            }
                         }
                     }
                     .labelsHidden()
@@ -301,10 +373,6 @@ private struct RuleEditor: View {
                 }
                 .pickerStyle(.segmented)
 
-                SectionHeader("触发")
-                TriggerButtonEditor(button: $rule.triggerButton)
-                    .id(rule.id)
-
                 SectionHeader("手势模板")
                 GestureTemplateEditor(rule: $rule)
 
@@ -312,7 +380,7 @@ private struct RuleEditor: View {
                 RegionEditor(region: $rule.region)
 
                 if !store.conflictingRules(for: rule).isEmpty {
-                    Label("存在同作用域、同触发条件和相近手势模板的冲突规则", systemImage: "exclamationmark.triangle")
+                    Label("存在同作用域、同屏幕区域和相近手势模板的冲突规则", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
                 }
             }
@@ -357,6 +425,7 @@ private struct RuleEditor: View {
 
 private struct TriggerButtonEditor: View {
     private enum TriggerButtonChoice: String, Hashable {
+        case left
         case right
         case middle
         case auxiliary
@@ -375,6 +444,7 @@ private struct TriggerButtonEditor: View {
                 Text("鼠标按钮")
                     .frame(width: 72, alignment: .leading)
                 Picker("鼠标按钮", selection: buttonChoiceBinding) {
+                    Text("左键").tag(TriggerButtonChoice.left)
                     Text("右键").tag(TriggerButtonChoice.right)
                     Text("中键").tag(TriggerButtonChoice.middle)
                     Text(auxiliarySegmentTitle).tag(TriggerButtonChoice.auxiliary)
@@ -426,6 +496,11 @@ private struct TriggerButtonEditor: View {
             get: { buttonChoice },
             set: { newValue in
                 switch newValue {
+                case .left:
+                    isAuxiliaryChoiceSelected = false
+                    button = .left
+                    recordingMessage = nil
+                    stopAuxiliaryRecording()
                 case .right:
                     isAuxiliaryChoiceSelected = false
                     button = .right
@@ -451,6 +526,8 @@ private struct TriggerButtonEditor: View {
         }
 
         switch button {
+        case .left:
+            return .left
         case .right:
             return .right
         case .middle:
@@ -503,7 +580,7 @@ private struct TriggerButtonEditor: View {
     private func recordAuxiliaryButton(_ event: NSEvent) -> Bool {
         let buttonNumber = Int64(event.buttonNumber)
         guard buttonNumber > MouseTriggerButton.middle.buttonNumber else {
-            recordingMessage = "右键/中键请直接选择固定项。"
+            recordingMessage = "左键/右键/中键请直接选择固定项。"
             stopAuxiliaryRecording()
             return false
         }
@@ -990,6 +1067,43 @@ private struct ColorPresetPicker: View {
     }
 }
 
+private struct TriggerModifierEditor: View {
+    @Binding var modifiers: ModifierFlags
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Text("按住修饰键")
+                    .frame(width: 72, alignment: .leading)
+                Toggle("⌃ Control", isOn: modifierBinding(\.control))
+                    .toggleStyle(.button)
+                Toggle("⌥ Option", isOn: modifierBinding(\.option))
+                    .toggleStyle(.button)
+                Toggle("⌘ Command", isOn: modifierBinding(\.command))
+                    .toggleStyle(.button)
+                Button("不使用") {
+                    modifiers = ModifierFlags()
+                }
+                .disabled(modifiers.isEmpty)
+            }
+
+            Text(modifiers.triggerTitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func modifierBinding(_ keyPath: WritableKeyPath<ModifierFlags, Bool>) -> Binding<Bool> {
+        Binding(
+            get: { modifiers[keyPath: keyPath] },
+            set: { value in
+                modifiers[keyPath: keyPath] = value
+                modifiers.shift = false
+            }
+        )
+    }
+}
+
 private struct GeneralSettingsPage: View {
     @EnvironmentObject private var store: ConfigurationStore
     @EnvironmentObject private var permissions: PermissionMonitor
@@ -1024,6 +1138,8 @@ private struct GeneralSettingsPage: View {
                 GroupBox("手势") {
                     VStack(alignment: .leading, spacing: 14) {
                         Toggle("启用全局手势", isOn: settingsBinding(\.gesturesEnabled))
+                        TriggerButtonEditor(button: settingsBinding(\.triggerButton))
+                        TriggerModifierEditor(modifiers: settingsBinding(\.triggerModifiers))
                         SliderRow(title: "触发阈值", value: settingsBinding(\.movementThreshold), range: 6...40, suffix: "px")
                         SliderRow(title: "方向最小距离", value: settingsBinding(\.segmentMinDistance), range: 8...60, suffix: "px")
                         GestureThresholdPreview(
@@ -1038,10 +1154,7 @@ private struct GeneralSettingsPage: View {
                 GroupBox("系统") {
                     VStack(alignment: .leading, spacing: 14) {
                         Toggle("登录时启动", isOn: launchAtLoginBinding)
-                        Toggle("在 Dock 中显示图标", isOn: settingsBinding(\.showDockIcon))
-                        Text("Dock 图标设置重启 App 后最稳定。当前 MVP 默认显示 Dock 图标。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Toggle("隐藏 Dock 图标", isOn: hideDockIconBinding)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(4)
@@ -1088,6 +1201,15 @@ private struct GeneralSettingsPage: View {
             set: { enabled in
                 appEnvironment.setLaunchAtLogin(enabled)
                 store.updateSettings { $0.launchAtLogin = enabled }
+            }
+        )
+    }
+
+    private var hideDockIconBinding: Binding<Bool> {
+        Binding(
+            get: { !store.settings.showDockIcon },
+            set: { shouldHideDockIcon in
+                store.updateSettings { $0.showDockIcon = !shouldHideDockIcon }
             }
         )
     }

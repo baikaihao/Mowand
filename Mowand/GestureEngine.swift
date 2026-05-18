@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Carbon.HIToolbox
 import Combine
 import CoreGraphics
@@ -113,9 +114,16 @@ final class GestureEngine: ObservableObject {
     }
 
     func start() {
+        guard canHandleGlobalEvents else {
+            stop()
+            return
+        }
         guard tap == nil else { return }
         let mask =
-            (1 << CGEventType.rightMouseDown.rawValue)
+            (1 << CGEventType.leftMouseDown.rawValue)
+            | (1 << CGEventType.leftMouseDragged.rawValue)
+            | (1 << CGEventType.leftMouseUp.rawValue)
+            | (1 << CGEventType.rightMouseDown.rawValue)
             | (1 << CGEventType.rightMouseDragged.rawValue)
             | (1 << CGEventType.rightMouseUp.rawValue)
             | (1 << CGEventType.otherMouseDown.rawValue)
@@ -152,29 +160,51 @@ final class GestureEngine: ObservableObject {
     }
 
     func stop() {
+        tearDownEventTap()
         hudHideTasks.values.forEach { $0.cancel() }
         hudHideTasks.removeAll()
         recognitionTask?.cancel()
         recognitionTask = nil
         lastHUDUpdateTime = 0
         lastTrajectoryUpdateTime = 0
-        if let tap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-        }
-        if let runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-        }
-        tap = nil
-        runLoopSource = nil
+        replayedMouseEventsRemaining.removeAll()
         session = GestureSession()
         setHUD(GestureHUDPresentation())
         setTrajectory(GestureTrajectoryPresentation())
         isRunning = false
     }
 
+    private var canHandleGlobalEvents: Bool {
+        AXIsProcessTrusted() && (store?.settings.gesturesEnabled ?? false)
+    }
+
+    private func tearDownEventTap() {
+        if let tap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+        }
+        if let runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+            CFRunLoopSourceInvalidate(runLoopSource)
+        }
+        if let tap {
+            CFMachPortInvalidate(tap)
+        }
+        tap = nil
+        runLoopSource = nil
+    }
+
     private func handle(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        guard canHandleGlobalEvents else {
+            stop()
+            return Unmanaged.passUnretained(event)
+        }
+
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            if canHandleGlobalEvents, let tap {
+                CGEvent.tapEnable(tap: tap, enable: true)
+            } else {
+                stop()
+            }
             return Unmanaged.passUnretained(event)
         }
 
@@ -197,6 +227,10 @@ final class GestureEngine: ObservableObject {
             return Unmanaged.passUnretained(event)
         }
 
+        let configuredTriggerButton = store.settings.triggerButton
+        let requiredTriggerModifiers = store.settings.triggerModifiers
+        let eventModifiers = ModifierFlags(cgFlags: event.flags)
+
         if type == .keyDown, event.getIntegerValueField(.keyboardEventKeycode) == kVK_Escape {
             if session.isActive {
                 cancelSession(message: "已取消")
@@ -210,10 +244,15 @@ final class GestureEngine: ObservableObject {
         }
 
         switch type {
-        case .rightMouseDown, .otherMouseDown:
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            guard button == configuredTriggerButton else {
+                return Unmanaged.passUnretained(event)
+            }
+            guard eventModifiers.containsAny(of: requiredTriggerModifiers) else {
+                return Unmanaged.passUnretained(event)
+            }
             let screenFrame = screenFrame(containing: event.location)
             guard store.hasEligibleRules(
-                button: button,
                 modifiers: ModifierFlags(),
                 location: event.location,
                 screenFrame: screenFrame,
@@ -223,15 +262,23 @@ final class GestureEngine: ObservableObject {
             }
             beginSession(at: event.location, button: button, screenFrame: screenFrame)
             return nil
-        case .rightMouseDragged, .otherMouseDragged:
+        case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
             guard session.isActive, button == session.button else {
                 return Unmanaged.passUnretained(event)
             }
+            guard eventModifiers.containsAny(of: requiredTriggerModifiers) else {
+                cancelSession(message: "已取消")
+                return nil
+            }
             updateSession(at: event.location)
             return nil
-        case .rightMouseUp, .otherMouseUp:
+        case .leftMouseUp, .rightMouseUp, .otherMouseUp:
             guard session.isActive, button == session.button else {
                 return Unmanaged.passUnretained(event)
+            }
+            guard eventModifiers.containsAny(of: requiredTriggerModifiers) else {
+                cancelSession(message: "已取消")
+                return nil
             }
             return endSession(event: event)
         default:
@@ -249,7 +296,6 @@ final class GestureEngine: ObservableObject {
         lastHUDUpdateTime = 0
         lastTrajectoryUpdateTime = 0
         let templateCandidates = store?.templateCandidates(
-            button: button,
             modifiers: ModifierFlags(),
             location: location,
             screenFrame: screenFrame,
@@ -368,7 +414,6 @@ final class GestureEngine: ObservableObject {
                 style: store.settings.hudStyle,
                 message: store.matchFailureMessage(
                     directions: recognizedDirections,
-                    button: session.button,
                     modifiers: ModifierFlags(),
                     location: session.startLocation,
                     screenFrame: session.screenFrame,
@@ -497,7 +542,6 @@ final class GestureEngine: ObservableObject {
 
         if let directionMatch = store.match(
             directions: result.directions,
-            button: session.button,
             modifiers: ModifierFlags(),
             location: session.startLocation,
             screenFrame: session.screenFrame,
@@ -522,7 +566,6 @@ final class GestureEngine: ObservableObject {
         session.match = nil
         session.hasPotentialMatch = store.hasPotentialMatch(
             directions: session.directions,
-            button: session.button,
             modifiers: ModifierFlags(),
             location: session.startLocation,
             screenFrame: session.screenFrame,
@@ -895,6 +938,7 @@ final class GestureEngine: ObservableObject {
 
     private func cgMouseButton(for button: MouseTriggerButton) -> CGMouseButton {
         switch button {
+        case .left: return .left
         case .right: return .right
         case .middle: return .center
         case .auxiliary(let buttonNumber): return CGMouseButton(rawValue: UInt32(buttonNumber)) ?? .center
@@ -903,6 +947,7 @@ final class GestureEngine: ObservableObject {
 
     private func mouseDownType(for button: MouseTriggerButton) -> CGEventType {
         switch button {
+        case .left: return .leftMouseDown
         case .right: return .rightMouseDown
         case .middle, .auxiliary: return .otherMouseDown
         }
@@ -910,6 +955,7 @@ final class GestureEngine: ObservableObject {
 
     private func mouseUpType(for button: MouseTriggerButton) -> CGEventType {
         switch button {
+        case .left: return .leftMouseUp
         case .right: return .rightMouseUp
         case .middle, .auxiliary: return .otherMouseUp
         }
@@ -917,6 +963,8 @@ final class GestureEngine: ObservableObject {
 
     private func replayButtonNumber(for type: CGEventType, event: CGEvent) -> Int64? {
         switch type {
+        case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
+            return MouseTriggerButton.left.buttonNumber
         case .rightMouseDown, .rightMouseDragged, .rightMouseUp:
             return MouseTriggerButton.right.buttonNumber
         case .otherMouseDown, .otherMouseDragged, .otherMouseUp:
@@ -938,6 +986,8 @@ final class GestureEngine: ObservableObject {
 
     private func button(for type: CGEventType, event: CGEvent) -> MouseTriggerButton? {
         switch type {
+        case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
+            return .left
         case .rightMouseDown, .rightMouseDragged, .rightMouseUp:
             return .right
         case .otherMouseDown, .otherMouseDragged, .otherMouseUp:

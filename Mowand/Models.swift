@@ -125,6 +125,7 @@ enum GestureDirection: String, Codable, CaseIterable, Identifiable, Hashable {
 }
 
 enum MouseTriggerButton: Codable, Hashable, Identifiable {
+    case left
     case right
     case middle
     case auxiliary(Int64)
@@ -133,6 +134,7 @@ enum MouseTriggerButton: Codable, Hashable, Identifiable {
 
     var title: String {
         switch self {
+        case .left: "左键"
         case .right: "右键"
         case .middle: "中键"
         case .auxiliary(let buttonNumber): "侧键 \(buttonNumber)"
@@ -141,6 +143,7 @@ enum MouseTriggerButton: Codable, Hashable, Identifiable {
 
     var buttonNumber: Int64 {
         switch self {
+        case .left: 0
         case .right: 1
         case .middle: 2
         case .auxiliary(let buttonNumber): buttonNumber
@@ -156,6 +159,7 @@ enum MouseTriggerButton: Codable, Hashable, Identifiable {
 
     private var storageValue: String {
         switch self {
+        case .left: "left"
         case .right: "right"
         case .middle: "middle"
         case .auxiliary(let buttonNumber): "auxiliary:\(buttonNumber)"
@@ -166,6 +170,8 @@ enum MouseTriggerButton: Codable, Hashable, Identifiable {
         let container = try decoder.singleValueContainer()
         let value = try container.decode(String.self)
         switch value {
+        case "left":
+            self = .left
         case "right":
             self = .right
         case "middle":
@@ -197,6 +203,19 @@ struct ModifierFlags: Codable, Hashable {
     var control: Bool = false
     var shift: Bool = false
 
+    var isEmpty: Bool {
+        !command && !option && !control && !shift
+    }
+
+    var triggerTitle: String {
+        var parts: [String] = []
+        if control { parts.append("⌃ Control") }
+        if option { parts.append("⌥ Option") }
+        if command { parts.append("⌘ Command") }
+        if shift { parts.append("⇧ Shift") }
+        return parts.isEmpty ? "不需要修饰键" : parts.joined(separator: " / ")
+    }
+
     var title: String {
         var parts: [String] = []
         if command { parts.append("⌘") }
@@ -204,6 +223,14 @@ struct ModifierFlags: Codable, Hashable {
         if control { parts.append("⌃") }
         if shift { parts.append("⇧") }
         return parts.isEmpty ? "无修饰键" : parts.joined(separator: " ")
+    }
+
+    func containsAny(of requiredModifiers: ModifierFlags) -> Bool {
+        requiredModifiers.isEmpty
+            || command && requiredModifiers.command
+            || option && requiredModifiers.option
+            || control && requiredModifiers.control
+            || shift && requiredModifiers.shift
     }
 }
 
@@ -450,6 +477,20 @@ struct ActionStep: Codable, Identifiable, Hashable {
 }
 
 enum SystemAction: String, Codable, CaseIterable, Identifiable {
+    case copy
+    case paste
+    case cut
+    case undo
+    case redo
+    case selectAll
+    case find
+    case save
+    case newDocument
+    case open
+    case closeWindow
+    case minimizeWindow
+    case hideApp
+    case quitApp
     case back
     case forward
     case refresh
@@ -470,12 +511,26 @@ enum SystemAction: String, Codable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .copy: "复制"
+        case .paste: "粘贴"
+        case .cut: "剪切"
+        case .undo: "撤销"
+        case .redo: "重做"
+        case .selectAll: "全选"
+        case .find: "查找"
+        case .save: "保存"
+        case .newDocument: "新建"
+        case .open: "打开"
+        case .closeWindow: "关闭窗口"
+        case .minimizeWindow: "最小化窗口"
+        case .hideApp: "隐藏当前 App"
+        case .quitApp: "退出当前 App"
         case .back: "返回"
         case .forward: "前进"
         case .refresh: "刷新"
-        case .screenshotFullScreen: "全屏截图（直接保存，⌘⇧3）"
-        case .screenshotSelection: "选区截图（拖拽区域，⌘⇧4）"
-        case .screenshot: "截图工具（完整面板，⌘⇧5）"
+        case .screenshotFullScreen: "全屏截图（直接保存）"
+        case .screenshotSelection: "选区截图"
+        case .screenshot: "截图工具"
         case .showDesktop: "显示桌面"
         case .missionControl: "调度中心"
         case .switchRecentApp: "切换最近使用的 App"
@@ -490,6 +545,20 @@ enum SystemAction: String, Codable, CaseIterable, Identifiable {
 
     var symbolName: String {
         switch self {
+        case .copy: "doc.on.doc"
+        case .paste: "doc.on.clipboard"
+        case .cut: "scissors"
+        case .undo: "arrow.uturn.backward"
+        case .redo: "arrow.uturn.forward"
+        case .selectAll: "selection.pin.in.out"
+        case .find: "magnifyingglass"
+        case .save: "square.and.arrow.down"
+        case .newDocument: "doc.badge.plus"
+        case .open: "folder"
+        case .closeWindow: "xmark.rectangle"
+        case .minimizeWindow: "minus.rectangle"
+        case .hideApp: "eye.slash"
+        case .quitApp: "power"
         case .back: "chevron.left"
         case .forward: "chevron.right"
         case .refresh: "arrow.clockwise"
@@ -506,6 +575,53 @@ enum SystemAction: String, Codable, CaseIterable, Identifiable {
         case .brightnessDown: "sun.min"
         case .lockScreen: "lock"
         }
+    }
+
+    var category: SystemActionCategory {
+        switch self {
+        case .copy, .paste, .cut, .undo, .redo, .selectAll, .find:
+            .editing
+        case .save, .newDocument, .open:
+            .file
+        case .back, .forward, .refresh:
+            .navigation
+        case .screenshotFullScreen, .screenshotSelection, .screenshot:
+            .screenshot
+        case .showDesktop, .missionControl, .switchRecentApp, .closeWindow, .minimizeWindow, .hideApp, .quitApp, .lockScreen:
+            .windowAndSystem
+        case .volumeUp, .volumeDown, .mute:
+            .audio
+        case .brightnessUp, .brightnessDown:
+            .display
+        }
+    }
+}
+
+enum SystemActionCategory: String, CaseIterable, Identifiable {
+    case editing
+    case file
+    case navigation
+    case screenshot
+    case windowAndSystem
+    case audio
+    case display
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .editing: "编辑"
+        case .file: "文件"
+        case .navigation: "导航"
+        case .screenshot: "截图"
+        case .windowAndSystem: "窗口与系统"
+        case .audio: "音量"
+        case .display: "亮度"
+        }
+    }
+
+    var actions: [SystemAction] {
+        SystemAction.allCases.filter { $0.category == self }
     }
 }
 

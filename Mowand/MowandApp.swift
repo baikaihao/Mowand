@@ -39,6 +39,9 @@ struct MowandApp: App {
                         gestureEngine.stop()
                     }
                 }
+                .onChange(of: store.settings.showDockIcon) { _, showDockIcon in
+                    applyDockIconPolicy(showDockIcon: showDockIcon)
+                }
         }
         .windowStyle(.titleBar)
         .commands {
@@ -78,7 +81,12 @@ struct MowandApp: App {
             )
         }
 
-        if store.settings.showDockIcon {
+        applyDockIconPolicy(showDockIcon: store.settings.showDockIcon)
+    }
+
+    @MainActor
+    private func applyDockIconPolicy(showDockIcon: Bool) {
+        if showDockIcon {
             NSApp.setActivationPolicy(.regular)
         } else {
             NSApp.setActivationPolicy(.accessory)

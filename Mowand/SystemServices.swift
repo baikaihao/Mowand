@@ -17,7 +17,7 @@ final class PermissionMonitor: ObservableObject {
     func start() {
         refresh()
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refresh() }
         }
     }
@@ -131,6 +131,40 @@ extension AppIdentity {
 final class ActionExecutor: ObservableObject {
     @Published private(set) var state: ActionExecutionState = .idle
 
+    private var recentApplications: [NSRunningApplication] = []
+    private var activationObserver: NSObjectProtocol?
+
+    init() {
+        if let application = NSWorkspace.shared.frontmostApplication {
+            recordActivatedApplication(application)
+        }
+
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let processIdentifier = (
+                notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            )?.processIdentifier else {
+                return
+            }
+
+            Task { @MainActor [weak self] in
+                guard let application = NSRunningApplication(processIdentifier: processIdentifier) else {
+                    return
+                }
+                self?.recordActivatedApplication(application)
+            }
+        }
+    }
+
+    deinit {
+        if let activationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(activationObserver)
+        }
+    }
+
     func execute(rule: GestureRule) async {
         state = .running(rule.name)
         for step in rule.actions where step.isEnabled {
@@ -173,28 +207,94 @@ final class ActionExecutor: ObservableObject {
 
     private func execute(systemAction: SystemAction) async throws {
         switch systemAction {
+        case .copy:
+            performMenuCommand(["Copy", "复制"]) {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_C), modifiers: ModifierFlags(command: true))
+            }
+        case .paste:
+            performMenuCommand(["Paste", "Paste and Match Style", "粘贴", "粘贴并匹配样式"]) {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_V), modifiers: ModifierFlags(command: true))
+            }
+        case .cut:
+            performMenuCommand(["Cut", "剪切"]) {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_X), modifiers: ModifierFlags(command: true))
+            }
+        case .undo:
+            performMenuCommand(["Undo", "Undo Typing", "撤销", "撤销键入"]) {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_Z), modifiers: ModifierFlags(command: true))
+            }
+        case .redo:
+            performMenuCommand(["Redo", "Redo Typing", "重做", "恢复"]) {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_Z), modifiers: ModifierFlags(command: true, shift: true))
+            }
+        case .selectAll:
+            performMenuCommand(["Select All", "全选"]) {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_A), modifiers: ModifierFlags(command: true))
+            }
+        case .find:
+            performMenuCommand(["Find", "Find...", "Find…", "查找", "查找..."]) {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_F), modifiers: ModifierFlags(command: true))
+            }
+        case .save:
+            performMenuCommand(["Save", "保存"]) {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_S), modifiers: ModifierFlags(command: true))
+            }
+        case .newDocument:
+            performMenuCommand(["New", "New Window", "New Document", "新建", "新建窗口", "新建文稿"]) {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_N), modifiers: ModifierFlags(command: true))
+            }
+        case .open:
+            performMenuCommand(["Open", "Open...", "Open…", "打开", "打开..."]) {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_O), modifiers: ModifierFlags(command: true))
+            }
+        case .closeWindow:
+            performMenuCommand(["Close Window", "Close", "关闭窗口", "关闭"]) {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_W), modifiers: ModifierFlags(command: true))
+            }
+        case .minimizeWindow:
+            performMenuCommand(["Minimize", "最小化"]) {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_M), modifiers: ModifierFlags(command: true))
+            }
+        case .hideApp:
+            hideFrontmostApplication {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_H), modifiers: ModifierFlags(command: true))
+            }
+        case .quitApp:
+            quitFrontmostApplication {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_Q), modifiers: ModifierFlags(command: true))
+            }
         case .back:
-            postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_LeftBracket), modifiers: ModifierFlags(command: true))
+            performMenuCommand(["Back", "Go Back", "返回", "后退"]) {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_LeftBracket), modifiers: ModifierFlags(command: true))
+            }
         case .forward:
-            postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_RightBracket), modifiers: ModifierFlags(command: true))
+            performMenuCommand(["Forward", "Go Forward", "前进"]) {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_RightBracket), modifiers: ModifierFlags(command: true))
+            }
         case .refresh:
-            postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_R), modifiers: ModifierFlags(command: true))
+            performMenuCommand(["Reload", "Reload Page", "Refresh", "刷新", "重新载入"]) {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_R), modifiers: ModifierFlags(command: true))
+            }
         case .screenshotFullScreen:
-            postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_3), modifiers: ModifierFlags(command: true, shift: true))
+            try captureScreenshot(arguments: ["-x"])
         case .screenshotSelection:
-            postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_4), modifiers: ModifierFlags(command: true, shift: true))
+            try captureScreenshot(arguments: ["-i", "-s"])
         case .screenshot:
-            postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_5), modifiers: ModifierFlags(command: true, shift: true))
+            openScreenshotPanel {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_5), modifiers: ModifierFlags(command: true, shift: true))
+            }
         case .showDesktop:
-            try sendDockNotification("com.apple.showdesktop.awake", fallback: {
+            sendDockNotification("com.apple.showdesktop.awake", fallback: {
                 postKeyStroke(keyCode: CGKeyCode(kVK_F11), modifiers: ModifierFlags())
             })
         case .missionControl:
-            try sendDockNotification("com.apple.expose.awake", fallback: {
+            sendDockNotification("com.apple.expose.awake", fallback: {
                 postKeyStroke(keyCode: CGKeyCode(kVK_F3), modifiers: ModifierFlags())
             })
         case .switchRecentApp:
-            postKeyStroke(keyCode: CGKeyCode(kVK_Tab), modifiers: ModifierFlags(command: true))
+            switchToRecentApplication {
+                postKeyStroke(keyCode: CGKeyCode(kVK_Tab), modifiers: ModifierFlags(command: true))
+            }
         case .volumeUp:
             postSystemDefinedKey(NX_KEYTYPE_SOUND_UP)
         case .volumeDown:
@@ -206,7 +306,9 @@ final class ActionExecutor: ObservableObject {
         case .brightnessDown:
             postSystemDefinedKey(NX_KEYTYPE_BRIGHTNESS_DOWN)
         case .lockScreen:
-            postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_Q), modifiers: ModifierFlags(command: true, control: true))
+            performMenuCommand(["Lock Screen", "锁定屏幕"]) {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_Q), modifiers: ModifierFlags(command: true, control: true))
+            }
         }
     }
 
@@ -233,19 +335,196 @@ final class ActionExecutor: ObservableObject {
         try process.run()
     }
 
-    private func sendDockNotification(_ name: String, fallback: () -> Void) throws {
+    private func captureScreenshot(arguments: [String]) throws {
+        let fileURL = try nextScreenshotFileURL()
+        try runProcess(at: "/usr/sbin/screencapture", arguments: arguments + [fileURL.path])
+    }
+
+    private func nextScreenshotFileURL() throws -> URL {
+        let directory = screenshotDirectoryURL()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
+        let baseName = "Screenshot \(formatter.string(from: Date()))"
+
+        var fileURL = directory.appendingPathComponent("\(baseName).png")
+        var duplicateIndex = 2
+        while FileManager.default.fileExists(atPath: fileURL.path) {
+            fileURL = directory.appendingPathComponent("\(baseName) \(duplicateIndex).png")
+            duplicateIndex += 1
+        }
+        return fileURL
+    }
+
+    private func screenshotDirectoryURL() -> URL {
+        if let location = UserDefaults.standard.persistentDomain(forName: "com.apple.screencapture")?["location"] as? String,
+           !location.isEmpty {
+            return URL(fileURLWithPath: (location as NSString).expandingTildeInPath)
+        }
+
+        return FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
+    }
+
+    private func runProcess(at path: String, arguments: [String]) throws {
+        guard FileManager.default.isExecutableFile(atPath: path) else {
+            throw ActionExecutionError.failed("找不到系统工具：\(path)")
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+        try process.run()
+    }
+
+    private func openScreenshotPanel(fallback: () -> Void) {
+        let screenshotAppURL = URL(fileURLWithPath: "/System/Applications/Utilities/Screenshot.app")
+        guard FileManager.default.fileExists(atPath: screenshotAppURL.path),
+              NSWorkspace.shared.open(screenshotAppURL) else {
+            fallback()
+            return
+        }
+    }
+
+    private func sendDockNotification(_ name: String, fallback: () -> Void) {
         typealias CoreDockSendNotification = @convention(c) (CFString, Int32) -> Void
         let frameworkPath = "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
         guard let handle = dlopen(frameworkPath, RTLD_NOW) else {
             fallback()
-            throw ActionExecutionError.failed("无法载入系统调度服务")
+            return
         }
         guard let symbol = dlsym(handle, "CoreDockSendNotification") else {
             fallback()
-            throw ActionExecutionError.failed("无法调用系统调度服务")
+            return
         }
         let sendNotification = unsafeBitCast(symbol, to: CoreDockSendNotification.self)
         sendNotification(name as CFString, 0)
+    }
+
+    private func performMenuCommand(_ titles: [String], fallback: () -> Void) {
+        guard AXIsProcessTrusted(),
+              let application = NSWorkspace.shared.frontmostApplication,
+              performMenuCommand(titles, in: application) else {
+            fallback()
+            return
+        }
+    }
+
+    private func performMenuCommand(_ titles: [String], in application: NSRunningApplication) -> Bool {
+        let appElement = AXUIElementCreateApplication(application.processIdentifier)
+        var menuBarValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, kAXMenuBarAttribute as CFString, &menuBarValue) == .success,
+              let menuBar = menuBarValue else {
+            return false
+        }
+        return performMenuCommand(titles, inMenuElement: unsafeBitCast(menuBar, to: AXUIElement.self))
+    }
+
+    private func performMenuCommand(_ titles: [String], inMenuElement menuElement: AXUIElement) -> Bool {
+        if menuItemMatches(menuElement, titles: titles),
+           AXUIElementPerformAction(menuElement, kAXPressAction as CFString) == .success {
+            return true
+        }
+
+        for child in accessibilityChildren(of: menuElement) {
+            if performMenuCommand(titles, inMenuElement: child) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func accessibilityChildren(of element: AXUIElement) -> [AXUIElement] {
+        var childrenValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
+              let children = childrenValue as? [AXUIElement] else {
+            return []
+        }
+        return children
+    }
+
+    private func menuItemMatches(_ element: AXUIElement, titles: [String]) -> Bool {
+        var roleValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue) == .success,
+              (roleValue as? String) == kAXMenuItemRole else {
+            return false
+        }
+
+        var enabledValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXEnabledAttribute as CFString, &enabledValue) == .success,
+           let isEnabled = enabledValue as? Bool,
+           !isEnabled {
+            return false
+        }
+
+        var titleValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &titleValue) == .success,
+              let title = titleValue as? String else {
+            return false
+        }
+
+        return titles.contains { candidate in
+            title == candidate || title.localizedCaseInsensitiveCompare(candidate) == .orderedSame
+        }
+    }
+
+    private func hideFrontmostApplication(fallback: () -> Void) {
+        guard let application = NSWorkspace.shared.frontmostApplication,
+              application.bundleIdentifier != Bundle.main.bundleIdentifier,
+              application.hide() else {
+            fallback()
+            return
+        }
+    }
+
+    private func quitFrontmostApplication(fallback: () -> Void) {
+        guard let application = NSWorkspace.shared.frontmostApplication,
+              application.bundleIdentifier != Bundle.main.bundleIdentifier,
+              application.terminate() else {
+            fallback()
+            return
+        }
+    }
+
+    private func switchToRecentApplication(fallback: () -> Void) {
+        pruneRecentApplications()
+
+        let currentProcessIdentifier = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        guard let application = recentApplications.first(where: { application in
+            application.processIdentifier != currentProcessIdentifier
+                && isSwitchableApplication(application)
+        }) else {
+            fallback()
+            return
+        }
+
+        guard application.activate(options: [.activateAllWindows]) else {
+            fallback()
+            return
+        }
+    }
+
+    private func recordActivatedApplication(_ application: NSRunningApplication) {
+        guard isSwitchableApplication(application) else { return }
+
+        recentApplications.removeAll { existingApplication in
+            existingApplication.processIdentifier == application.processIdentifier
+        }
+        recentApplications.insert(application, at: 0)
+        if recentApplications.count > 12 {
+            recentApplications.removeSubrange(12...)
+        }
+    }
+
+    private func pruneRecentApplications() {
+        recentApplications.removeAll { !isSwitchableApplication($0) }
+    }
+
+    private func isSwitchableApplication(_ application: NSRunningApplication) -> Bool {
+        application.activationPolicy == .regular
+            && !application.isTerminated
+            && application.bundleIdentifier != Bundle.main.bundleIdentifier
     }
 
     private func postKeyStroke(keyCode: CGKeyCode, modifiers: ModifierFlags) {

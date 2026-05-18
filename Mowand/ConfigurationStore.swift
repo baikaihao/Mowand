@@ -75,14 +75,12 @@ final class ConfigurationStore: ObservableObject {
 
     func match(
         directions: [GestureDirection],
-        button: MouseTriggerButton,
         modifiers: ModifierFlags,
         location: CGPoint,
         screenFrame: CGRect,
         frontmostApplication: AppIdentity?
     ) -> GestureMatch? {
         guard let candidate = eligibleRuleCandidates(
-            button: button,
             modifiers: modifiers,
             location: location,
             screenFrame: screenFrame,
@@ -100,14 +98,12 @@ final class ConfigurationStore: ObservableObject {
 
     func templateMatch(
         points: [CGPoint],
-        button: MouseTriggerButton,
         modifiers: ModifierFlags,
         location: CGPoint,
         screenFrame: CGRect,
         frontmostApplication: AppIdentity?
     ) -> GestureMatch? {
         let candidates = eligibleRuleCandidates(
-            button: button,
             modifiers: modifiers,
             location: location,
             screenFrame: screenFrame,
@@ -126,14 +122,12 @@ final class ConfigurationStore: ObservableObject {
     }
 
     func templateCandidates(
-        button: MouseTriggerButton,
         modifiers: ModifierFlags,
         location: CGPoint,
         screenFrame: CGRect,
         frontmostApplication: AppIdentity?
     ) -> [GestureTemplateCandidate] {
         eligibleRuleCandidates(
-            button: button,
             modifiers: modifiers,
             location: location,
             screenFrame: screenFrame,
@@ -151,14 +145,12 @@ final class ConfigurationStore: ObservableObject {
     }
 
     func hasEligibleRules(
-        button: MouseTriggerButton,
         modifiers: ModifierFlags,
         location: CGPoint,
         screenFrame: CGRect,
         frontmostApplication: AppIdentity?
     ) -> Bool {
         !eligibleRuleCandidates(
-            button: button,
             modifiers: modifiers,
             location: location,
             screenFrame: screenFrame,
@@ -179,7 +171,6 @@ final class ConfigurationStore: ObservableObject {
 
     func hasPotentialMatch(
         directions: [GestureDirection],
-        button: MouseTriggerButton,
         modifiers: ModifierFlags,
         location: CGPoint,
         screenFrame: CGRect,
@@ -189,7 +180,6 @@ final class ConfigurationStore: ObservableObject {
 
         let enabledRules = configuration.rules.filter {
             $0.isEnabled
-                && $0.triggerButton == button
                 && $0.directions.count > directions.count
                 && $0.directions.starts(with: directions)
                 && $0.region.contains(location: location, in: screenFrame)
@@ -211,7 +201,6 @@ final class ConfigurationStore: ObservableObject {
 
     func matchFailureMessage(
         directions: [GestureDirection],
-        button: MouseTriggerButton,
         modifiers: ModifierFlags,
         location: CGPoint,
         screenFrame: CGRect,
@@ -225,12 +214,7 @@ final class ConfigurationStore: ObservableObject {
         let enabledDirectionRules = directionRules.filter(\.isEnabled)
         guard !enabledDirectionRules.isEmpty else { return "方向已分配，但规则未启用" }
 
-        let triggerRules = enabledDirectionRules.filter {
-            $0.triggerButton == button
-        }
-        guard !triggerRules.isEmpty else { return "方向已分配，触发按钮不一致" }
-
-        let regionRules = triggerRules.filter {
+        let regionRules = enabledDirectionRules.filter {
             $0.region.contains(location: location, in: screenFrame)
         }
         guard !regionRules.isEmpty else { return "方向已分配，起点不在屏幕区域" }
@@ -248,7 +232,6 @@ final class ConfigurationStore: ObservableObject {
             rule.id != candidate.id
                 && rule.isEnabled
                 && candidate.isEnabled
-                && rule.triggerButton == candidate.triggerButton
                 && rule.region == candidate.region
                 && rule.scope == candidate.scope
                 && rule.directions == candidate.directions
@@ -294,10 +277,19 @@ final class ConfigurationStore: ObservableObject {
             if configuration.schemaVersion < MowandConfiguration.currentSchemaVersion {
                 configuration.schemaVersion = MowandConfiguration.currentSchemaVersion
             }
+            migrateRuleTriggerButtonToGlobalSettingIfNeeded(&configuration)
             return configuration
         } catch {
             return .empty
         }
+    }
+
+    private static func migrateRuleTriggerButtonToGlobalSettingIfNeeded(_ configuration: inout MowandConfiguration) {
+        guard configuration.settings.triggerButton == .right,
+              let migratedButton = configuration.rules.first(where: { $0.triggerButton != .right })?.triggerButton else {
+            return
+        }
+        configuration.settings.triggerButton = migratedButton
     }
 
     private static func save(_ configuration: MowandConfiguration, to fileURL: URL) throws {
@@ -333,7 +325,6 @@ final class ConfigurationStore: ObservableObject {
     }
 
     private func eligibleRuleCandidates(
-        button: MouseTriggerButton,
         modifiers: ModifierFlags,
         location: CGPoint,
         screenFrame: CGRect,
@@ -341,7 +332,6 @@ final class ConfigurationStore: ObservableObject {
     ) -> [GestureRuleCandidate] {
         let triggerRules = configuration.rules.filter {
             $0.isEnabled
-                && $0.triggerButton == button
                 && $0.region.contains(location: location, in: screenFrame)
         }
 
