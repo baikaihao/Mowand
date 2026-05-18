@@ -424,7 +424,7 @@ struct GestureRule: Codable, Identifiable, Hashable {
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
         isEnabled = try container.decode(Bool.self, forKey: .isEnabled)
-        scope = try container.decode(GestureScope.self, forKey: .scope)
+        scope = .global
         triggerButton = try container.decode(MouseTriggerButton.self, forKey: .triggerButton)
         modifiers = try container.decode(ModifierFlags.self, forKey: .modifiers)
         region = try container.decode(ScreenRegion.self, forKey: .region)
@@ -465,15 +465,57 @@ struct ActionStep: Codable, Identifiable, Hashable {
     var type: ActionType
     var failurePolicy: FailurePolicy
     var isEnabled: Bool
+    var screenshotExecutionMode: ScreenshotExecutionMode
 
-    init(id: UUID = UUID(), type: ActionType, failurePolicy: FailurePolicy = .stop, isEnabled: Bool = true) {
+    init(
+        id: UUID = UUID(),
+        type: ActionType,
+        failurePolicy: FailurePolicy = .stop,
+        isEnabled: Bool = true,
+        screenshotExecutionMode: ScreenshotExecutionMode = .direct
+    ) {
         self.id = id
         self.type = type
         self.failurePolicy = failurePolicy
         self.isEnabled = isEnabled
+        self.screenshotExecutionMode = screenshotExecutionMode
     }
 
     var title: String { type.title }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case type
+        case failurePolicy
+        case isEnabled
+        case screenshotExecutionMode
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        type = try container.decode(ActionType.self, forKey: .type)
+        failurePolicy = try container.decode(FailurePolicy.self, forKey: .failurePolicy)
+        isEnabled = try container.decode(Bool.self, forKey: .isEnabled)
+        screenshotExecutionMode = try container.decodeIfPresent(
+            ScreenshotExecutionMode.self,
+            forKey: .screenshotExecutionMode
+        ) ?? .direct
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(type, forKey: .type)
+        try container.encode(failurePolicy, forKey: .failurePolicy)
+        try container.encode(isEnabled, forKey: .isEnabled)
+        try container.encode(screenshotExecutionMode, forKey: .screenshotExecutionMode)
+    }
+}
+
+enum ScreenshotExecutionMode: String, Codable, Hashable {
+    case direct
+    case shortcut
 }
 
 enum SystemAction: String, Codable, CaseIterable, Identifiable {
@@ -528,7 +570,7 @@ enum SystemAction: String, Codable, CaseIterable, Identifiable {
         case .back: "返回"
         case .forward: "前进"
         case .refresh: "刷新"
-        case .screenshotFullScreen: "全屏截图（直接保存）"
+        case .screenshotFullScreen: "全屏截图"
         case .screenshotSelection: "选区截图"
         case .screenshot: "截图工具"
         case .showDesktop: "显示桌面"
@@ -593,6 +635,15 @@ enum SystemAction: String, Codable, CaseIterable, Identifiable {
             .audio
         case .brightnessUp, .brightnessDown:
             .display
+        }
+    }
+
+    var isScreenshotAction: Bool {
+        switch self {
+        case .screenshotFullScreen, .screenshotSelection, .screenshot:
+            true
+        default:
+            false
         }
     }
 }

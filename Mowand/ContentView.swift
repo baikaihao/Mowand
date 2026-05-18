@@ -73,7 +73,6 @@ private struct Sidebar: View {
             Label(page.title, systemImage: page.symbolName)
                 .tag(page)
         }
-        .navigationTitle("Mowand")
         .safeAreaInset(edge: .bottom) {
             VStack(alignment: .leading, spacing: 12) {
                 Toggle(isOn: gesturesEnabledBinding) {
@@ -185,7 +184,7 @@ private struct GesturesPage: View {
                 } else {
                     EmptySelectionView(
                         title: "选择或新建手势",
-                        subtitle: "默认模板已自动创建，可直接修改动作、作用域和手势模板。",
+                        subtitle: "默认模板已自动创建，可直接修改动作和手势模板。",
                         systemImage: "wand.and.stars"
                     )
                 }
@@ -324,7 +323,7 @@ private struct RuleRow: View {
                 .font(.headline)
             Text(rule.gestureTitle)
                 .font(.subheadline)
-            Text("\(rule.scope.title) · \(rule.region.title) · \(rule.actionTitle)")
+            Text("\(rule.region.title) · \(rule.actionTitle)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -367,11 +366,15 @@ private struct RuleEditor: View {
                     .pickerStyle(.menu)
                 }
 
-                Picker("作用域", selection: scopeBinding) {
-                    Text("全局").tag("global")
-                    Text("当前前台 App").tag("frontmost")
+                if assignedSystemActionBinding.wrappedValue.isScreenshotAction {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle("以快捷键式运行", isOn: screenshotShortcutBinding)
+                        Text("截图将预览在右下角，不会由 Mowand 直接保存到桌面；不会申请屏幕捕捉权限。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.leading, 72)
                 }
-                .pickerStyle(.segmented)
 
                 SectionHeader("手势模板")
                 GestureTemplateEditor(rule: $rule)
@@ -380,7 +383,7 @@ private struct RuleEditor: View {
                 RegionEditor(region: $rule.region)
 
                 if !store.conflictingRules(for: rule).isEmpty {
-                    Label("存在同作用域、同屏幕区域和相近手势模板的冲突规则", systemImage: "exclamationmark.triangle")
+                    Label("存在同屏幕区域和相近手势模板的冲突规则", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
                 }
             }
@@ -399,25 +402,34 @@ private struct RuleEditor: View {
             },
             set: { action in
                 rule.name = action.title
-                rule.actions = [ActionStep(type: .system(action))]
+                let currentMode = rule.actions.first?.screenshotExecutionMode ?? .direct
+                rule.actions = [
+                    ActionStep(
+                        type: .system(action),
+                        screenshotExecutionMode: action.isScreenshotAction ? currentMode : .direct
+                    )
+                ]
             }
         )
     }
 
-    private var scopeBinding: Binding<String> {
+    private var screenshotShortcutBinding: Binding<Bool> {
         Binding(
             get: {
-                if case .global = rule.scope { return "global" }
-                return "frontmost"
-            },
-            set: { value in
-                if value == "global" {
-                    rule.scope = .global
-                } else {
-                    let app = NSWorkspace.shared.frontmostApplication.map { AppIdentity(application: $0) }
-                        ?? AppIdentity(bundleIdentifier: nil, displayName: "当前 App", path: nil)
-                    rule.scope = .application(app)
+                guard rule.actions.count == 1,
+                      case .system(let action) = rule.actions[0].type,
+                      action.isScreenshotAction else {
+                    return false
                 }
+                return rule.actions[0].screenshotExecutionMode == .shortcut
+            },
+            set: { useShortcut in
+                guard rule.actions.count == 1,
+                      case .system(let action) = rule.actions[0].type,
+                      action.isScreenshotAction else {
+                    return
+                }
+                rule.actions[0].screenshotExecutionMode = useShortcut ? .shortcut : .direct
             }
         )
     }

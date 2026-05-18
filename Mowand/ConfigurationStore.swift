@@ -185,18 +185,10 @@ final class ConfigurationStore: ObservableObject {
                 && $0.region.contains(location: location, in: screenFrame)
         }
 
-        if let frontmostApplication,
-           enabledRules.contains(where: { rule in
-               rule.scope.bundleIdentifier == frontmostApplication.bundleIdentifier
-                   || (rule.scope.bundleIdentifier == nil && rule.scope.title == frontmostApplication.displayName)
-           }) {
-            return true
-        }
-
         let isExcluded = frontmostApplication.map(isApplicationExcluded) ?? false
         guard !isExcluded else { return false }
 
-        return enabledRules.contains(where: isGlobalRule)
+        return !enabledRules.isEmpty
     }
 
     func matchFailureMessage(
@@ -219,12 +211,11 @@ final class ConfigurationStore: ObservableObject {
         }
         guard !regionRules.isEmpty else { return "方向已分配，起点不在屏幕区域" }
 
-        let isExcluded = frontmostApplication.map(isApplicationExcluded) ?? false
-        if isExcluded, regionRules.contains(where: isGlobalRule) {
+        if frontmostApplication.map(isApplicationExcluded) ?? false {
             return "当前 App 已排除"
         }
 
-        return "方向已分配，不适用于当前 App"
+        return "方向已分配，不适用于当前屏幕区域"
     }
 
     func conflictingRules(for candidate: GestureRule) -> [GestureRule] {
@@ -233,7 +224,6 @@ final class ConfigurationStore: ObservableObject {
                 && rule.isEnabled
                 && candidate.isEnabled
                 && rule.region == candidate.region
-                && rule.scope == candidate.scope
                 && rule.directions == candidate.directions
         }
     }
@@ -319,11 +309,6 @@ final class ConfigurationStore: ObservableObject {
         }
     }
 
-    private func isGlobalRule(_ rule: GestureRule) -> Bool {
-        if case .global = rule.scope { return true }
-        return false
-    }
-
     private func eligibleRuleCandidates(
         modifiers: ModifierFlags,
         location: CGPoint,
@@ -335,28 +320,14 @@ final class ConfigurationStore: ObservableObject {
                 && $0.region.contains(location: location, in: screenFrame)
         }
 
-        let applicationRules: [GestureRuleCandidate]
-        if let frontmostApplication {
-            applicationRules = triggerRules.compactMap { rule in
-                guard rule.matchesApplication(frontmostApplication) else { return nil }
-                return GestureRuleCandidate(rule: rule, isApplicationSpecific: true)
-            }
-        } else {
-            applicationRules = []
-        }
-
         let isExcluded = frontmostApplication.map(isApplicationExcluded) ?? false
-        let globalRules: [GestureRuleCandidate]
-        if isExcluded {
-            globalRules = []
-        } else {
-            globalRules = triggerRules.compactMap { rule in
-                guard isGlobalRule(rule) else { return nil }
-                return GestureRuleCandidate(rule: rule, isApplicationSpecific: false)
-            }
+        guard !isExcluded else {
+            return []
         }
 
-        return applicationRules + globalRules
+        return triggerRules.map { rule in
+            GestureRuleCandidate(rule: rule, isApplicationSpecific: false)
+        }
     }
 }
 
@@ -369,21 +340,6 @@ struct GestureTemplateCandidate: Sendable {
     var ruleID: UUID
     var isApplicationSpecific: Bool
     var templateVectors: [[Double]]
-}
-
-private extension GestureRule {
-    func matchesApplication(_ application: AppIdentity) -> Bool {
-        switch scope {
-        case .global:
-            return false
-        case .application(let identity):
-            if let ruleBundle = identity.bundleIdentifier,
-               let applicationBundle = application.bundleIdentifier {
-                return ruleBundle == applicationBundle
-            }
-            return identity.path == application.path || identity.displayName == application.displayName
-        }
-    }
 }
 
 extension ScreenRegion {

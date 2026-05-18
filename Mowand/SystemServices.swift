@@ -183,7 +183,7 @@ final class ActionExecutor: ObservableObject {
     private func execute(step: ActionStep) async throws {
         switch step.type {
         case .system(let action):
-            try await execute(systemAction: action)
+            try await execute(systemAction: action, screenshotExecutionMode: step.screenshotExecutionMode)
         case .keyboardShortcut(let keyStroke):
             postKeyStroke(keyCode: CGKeyCode(keyStroke.keyCode), modifiers: keyStroke.modifiers)
         case .openApplication(let app):
@@ -205,7 +205,10 @@ final class ActionExecutor: ObservableObject {
         }
     }
 
-    private func execute(systemAction: SystemAction) async throws {
+    private func execute(
+        systemAction: SystemAction,
+        screenshotExecutionMode: ScreenshotExecutionMode = .direct
+    ) async throws {
         switch systemAction {
         case .copy:
             performMenuCommand(["Copy", "复制"]) {
@@ -276,12 +279,24 @@ final class ActionExecutor: ObservableObject {
                 postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_R), modifiers: ModifierFlags(command: true))
             }
         case .screenshotFullScreen:
-            try captureScreenshot(arguments: ["-x"])
+            if screenshotExecutionMode == .shortcut {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_3), modifiers: ModifierFlags(command: true, shift: true))
+            } else {
+                try captureScreenshot(arguments: ["-x"])
+            }
         case .screenshotSelection:
-            try captureScreenshot(arguments: ["-i", "-s"])
+            if screenshotExecutionMode == .shortcut {
+                postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_4), modifiers: ModifierFlags(command: true, shift: true))
+            } else {
+                try captureScreenshot(arguments: ["-i", "-s"])
+            }
         case .screenshot:
-            openScreenshotPanel {
+            if screenshotExecutionMode == .shortcut {
                 postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_5), modifiers: ModifierFlags(command: true, shift: true))
+            } else {
+                openScreenshotPanel {
+                    postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_5), modifiers: ModifierFlags(command: true, shift: true))
+                }
             }
         case .showDesktop:
             sendDockNotification("com.apple.showdesktop.awake", fallback: {

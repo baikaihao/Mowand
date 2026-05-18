@@ -43,7 +43,7 @@ struct MowandApp: App {
                     applyDockIconPolicy(showDockIcon: showDockIcon)
                 }
         }
-        .windowStyle(.titleBar)
+        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
