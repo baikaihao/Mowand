@@ -923,14 +923,27 @@ private struct HUDSettingsPage: View {
                         Toggle("显示方向范围", isOn: hudBinding(\.showDirectionGuide))
                         Toggle("显示方向文字", isOn: hudBinding(\.showDirectionLabels))
                         Toggle("显示方向箭头", isOn: hudBinding(\.showDirectionArrows))
-                        Picker("判断窗口", selection: hudBinding(\.panelBackgroundStyle)) {
-                            ForEach(HUDPanelBackgroundStyle.allCases) { style in
-                                Text(style.title).tag(style)
-                            }
-                        }
-                        .pickerStyle(.segmented)
+                        SliderRow(title: "磨砂比例", value: hudBinding(\.panelFrostedGlassRatio), range: 0...1, suffix: "%", precision: 0, displayScale: 100)
+                        HUDGlassRatioPreview(style: store.settings.hudStyle)
+                            .padding(.leading, 110)
                         SliderRow(title: "停留时间", value: settingsBinding(\.hudDismissDelay), range: 0.1...2, suffix: "秒")
                         SliderRow(title: "淡出时间", value: settingsBinding(\.hudFadeDuration), range: 0.05...0.6, suffix: "秒", precision: 2)
+                    }
+                    .padding(4)
+                }
+
+                GroupBox("线条") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HUDLineStylePicker(
+                            title: "轨迹与高亮",
+                            color: hudBinding(\.highlightedColor),
+                            opacity: hudBinding(\.highlightedLineOpacity)
+                        )
+                        HUDLineStylePicker(
+                            title: "方向范围线条",
+                            color: hudBinding(\.normalLineColor),
+                            opacity: hudBinding(\.normalLineOpacity)
+                        )
                     }
                     .padding(4)
                 }
@@ -943,14 +956,6 @@ private struct HUDSettingsPage: View {
                         SliderRow(title: "线宽", value: hudBinding(\.directionGuideLineWidth), range: 0.2...5, suffix: "px")
                         SliderRow(title: "箭头大小", value: hudBinding(\.directionGuideArrowSize), range: 2...24, suffix: "px")
                         SliderRow(title: "字体大小", value: hudBinding(\.directionGuideFontSize), range: 3...18, suffix: "px")
-                    }
-                    .padding(4)
-                }
-
-                GroupBox("颜色") {
-                    VStack(alignment: .leading, spacing: 14) {
-                        ColorPresetPicker(title: "高亮颜色", selection: hudBinding(\.highlightedColor))
-                        ColorPresetPicker(title: "普通线条", selection: hudBinding(\.normalLineColor))
                     }
                     .padding(4)
                 }
@@ -1003,7 +1008,7 @@ private struct HUDPreview: View {
                     .fill(.quaternary.opacity(0.8))
                 if style.showTrajectory {
                     HUDPreviewTrajectoryPath(points: points)
-                        .stroke(style.highlightedColor.color, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                        .stroke(style.highlightedLineColor, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
                         .shadow(radius: 5)
                 }
                 HUDOverlay(snapshot: snapshot)
@@ -1043,15 +1048,76 @@ private struct HUDPreviewTrajectoryPath: Shape {
     }
 }
 
+private struct HUDGlassRatioPreview: View {
+    let style: HUDSettings
+
+    var body: some View {
+        ZStack {
+            previewBackdrop
+
+            HStack(spacing: 8) {
+                Image(systemName: "wand.and.stars")
+                    .foregroundStyle(style.highlightedLineColor)
+                Text("识别中")
+                    .font(.headline)
+                Text("示例动作")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(HUDPanelBackground(style: style))
+        }
+        .frame(height: 76)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var previewBackdrop: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.95, green: 0.96, blue: 0.98),
+                    Color(red: 0.82, green: 0.90, blue: 1.0),
+                    Color(red: 0.94, green: 0.95, blue: 0.92)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            VStack(spacing: 12) {
+                ForEach(0..<3, id: \.self) { index in
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(index == 1 ? style.highlightedLineColor.opacity(0.65) : Color.primary.opacity(0.15))
+                        .frame(height: 6)
+                        .offset(x: index == 1 ? 36 : -28)
+                }
+            }
+            .padding(.horizontal, 26)
+        }
+    }
+}
+
+private struct HUDLineStylePicker: View {
+    let title: String
+    @Binding var color: HUDColorPreset
+    @Binding var opacity: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ColorPresetPicker(title: title, selection: $color)
+            SliderRow(title: "透明度", value: $opacity, range: 0.05...1, suffix: "%", precision: 0, displayScale: 100)
+        }
+    }
+}
+
 private struct ColorPresetPicker: View {
     let title: String
     @Binding var selection: HUDColorPreset
 
     var body: some View {
-        HStack {
+        HStack(alignment: .top) {
             Text(title)
                 .frame(width: 110, alignment: .leading)
-            HStack(spacing: 8) {
+            LazyVGrid(columns: colorColumns, alignment: .leading, spacing: 8) {
                 ForEach(HUDColorPreset.allCases) { preset in
                     Button {
                         selection = preset
@@ -1076,6 +1142,10 @@ private struct ColorPresetPicker: View {
                 }
             }
         }
+    }
+
+    private var colorColumns: [GridItem] {
+        Array(repeating: GridItem(.fixed(22), spacing: 8), count: 8)
     }
 }
 
@@ -1371,13 +1441,14 @@ private struct SliderRow: View {
     let range: ClosedRange<Double>
     let suffix: String
     var precision: Int = 1
+    var displayScale: Double = 1
 
     var body: some View {
         HStack {
             Text(title)
                 .frame(width: 110, alignment: .leading)
             Slider(value: $value, in: range)
-            Text("\(value.formatted(.number.precision(.fractionLength(precision)))) \(suffix)")
+            Text("\((value * displayScale).formatted(.number.precision(.fractionLength(precision)))) \(suffix)")
                 .font(.caption.monospacedDigit())
                 .frame(width: 70, alignment: .trailing)
         }

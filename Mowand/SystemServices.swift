@@ -6,6 +6,7 @@ import CoreGraphics
 import Darwin
 import Foundation
 import IOKit
+import IOKit.pwr_mgt
 import ServiceManagement
 
 @MainActor
@@ -324,6 +325,8 @@ final class ActionExecutor: ObservableObject {
             performMenuCommand(["Lock Screen", "锁定屏幕"]) {
                 postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_Q), modifiers: ModifierFlags(command: true, control: true))
             }
+        case .systemSleep:
+            try sleepSystem()
         }
     }
 
@@ -391,6 +394,19 @@ final class ActionExecutor: ObservableObject {
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
         try process.run()
+    }
+
+    private func sleepSystem() throws {
+        let powerManagementPort = IOPMFindPowerManagement(0)
+        guard powerManagementPort != 0 else {
+            throw ActionExecutionError.failed("无法连接电源管理服务")
+        }
+        defer { IOServiceClose(powerManagementPort) }
+
+        let result = IOPMSleepSystem(powerManagementPort)
+        guard result == kIOReturnSuccess else {
+            throw ActionExecutionError.failed("系统睡眠失败：\(result)")
+        }
     }
 
     private func openScreenshotPanel(fallback: () -> Void) {

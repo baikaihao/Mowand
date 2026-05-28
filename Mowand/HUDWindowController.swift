@@ -113,7 +113,7 @@ private final class HUDTrajectoryView: NSView {
             shapeLayer.frame = bounds
             shapeLayer.path = path(for: snapshot).cgPath
             shapeLayer.strokeColor = strokeColor(for: snapshot)
-            shapeLayer.opacity = Float(opacity(for: snapshot))
+            shapeLayer.opacity = Float(layerOpacity(for: snapshot))
         }
         CATransaction.commit()
         updateFadeTimer()
@@ -156,6 +156,10 @@ private final class HUDTrajectoryView: NSView {
         return snapshot.style.highlightedColor.nsColor.cgColor
     }
 
+    private func layerOpacity(for snapshot: GestureTrajectorySnapshot) -> CGFloat {
+        opacity(for: snapshot) * snapshot.style.highlightedLineOpacity
+    }
+
     private func opacity(for snapshot: GestureTrajectorySnapshot) -> CGFloat {
         guard let fadeStartedAt = snapshot.fadeStartedAt else { return snapshot.isVisible ? 1 : 0 }
         let elapsed = Date().timeIntervalSince(fadeStartedAt)
@@ -193,10 +197,19 @@ private extension HUDColorPreset {
         switch self {
         case .blue: return .systemBlue
         case .cyan: return .systemCyan
+        case .teal: return .systemTeal
+        case .mint: return .systemMint
         case .green: return .systemGreen
+        case .lime: return NSColor(red: 0.62, green: 0.82, blue: 0.08, alpha: 1)
+        case .yellow: return .systemYellow
         case .orange: return .systemOrange
+        case .amber: return NSColor(red: 1.0, green: 0.72, blue: 0.12, alpha: 1)
         case .red: return .systemRed
+        case .pink: return .systemPink
         case .purple: return .systemPurple
+        case .indigo: return .systemIndigo
+        case .gray: return .systemGray
+        case .black: return .black
         case .white: return .white
         }
     }

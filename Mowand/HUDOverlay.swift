@@ -115,7 +115,7 @@ private struct HUDSnapshotLayer: View {
     private var pathColor: Color {
         if snapshot.isError { return .red }
         if snapshot.isCancelled { return .orange }
-        return snapshot.style.highlightedColor.color
+        return snapshot.style.highlightedLineColor
     }
 
     private var iconName: String {
@@ -126,34 +126,7 @@ private struct HUDSnapshotLayer: View {
 
     @ViewBuilder
     private var panelBackground: some View {
-        switch snapshot.style.panelBackgroundStyle {
-        case .transparentGlass:
-            transparentGlassPanelBackground
-        case .frostedGlass:
-            frostedGlassPanelBackground
-        }
-    }
-
-    private var transparentGlassPanelBackground: some View {
-        let fill = colorScheme == .dark ? Color.black.opacity(0.22) : Color.white.opacity(0.2)
-        let stroke = colorScheme == .dark ? Color.white.opacity(0.18) : Color.white.opacity(0.58)
-        return RoundedRectangle(cornerRadius: 8)
-            .fill(fill)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(stroke, lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.14), radius: 16, y: 8)
-    }
-
-    private var frostedGlassPanelBackground: some View {
-        RoundedRectangle(cornerRadius: 8)
-            .fill(.regularMaterial)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(.white.opacity(0.18), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.14), radius: 16, y: 8)
+        HUDPanelBackground(style: snapshot.style)
     }
 
     private func pathGeometry(in size: CGSize) -> HUDPathGeometry {
@@ -205,6 +178,43 @@ private struct HUDPathGeometry {
     var bounds: CGRect?
 }
 
+struct HUDPanelBackground: View {
+    let style: HUDSettings
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let ratio = min(max(style.panelFrostedGlassRatio, 0), 1)
+        ZStack {
+            transparentGlassFill
+                .opacity(1 - ratio)
+            frostedGlassFill
+                .opacity(ratio)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(panelStrokeColor(ratio: ratio), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.14), radius: 16, y: 8)
+    }
+
+    private var transparentGlassFill: some View {
+        colorScheme == .dark ? Color.black.opacity(0.22) : Color.white.opacity(0.2)
+    }
+
+    private var frostedGlassFill: some View {
+        Rectangle()
+            .fill(.regularMaterial)
+    }
+
+    private func panelStrokeColor(ratio: Double) -> Color {
+        let transparentStroke = colorScheme == .dark ? Color.white.opacity(0.18) : Color.white.opacity(0.58)
+        let frostedStroke = Color.white.opacity(0.18)
+        return ratio < 0.5 ? transparentStroke : frostedStroke
+    }
+}
+
 private struct SmoothDirectionGuideContainer: View {
     let style: HUDSettings
     let currentDirection: GestureDirection?
@@ -253,8 +263,8 @@ private struct DirectionGuideView: View {
             let radius = min(proxy.size.width, proxy.size.height) / 2
             let center = CGPoint(x: proxy.size.width / 2, y: proxy.size.height / 2)
             let innerRadius = max(10, radius * 0.16)
-            let normalColor = style.normalLineColor.color.opacity(style.directionGuideOpacity)
-            let highlightColor = style.highlightedColor.color.opacity(min(1, style.directionGuideOpacity + 0.16))
+            let normalColor = style.normalLineStrokeColor.opacity(style.directionGuideOpacity)
+            let highlightColor = style.highlightedLineColor.opacity(min(1, style.directionGuideOpacity + 0.16))
 
             ZStack {
                 Circle()

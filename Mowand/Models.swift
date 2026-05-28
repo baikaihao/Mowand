@@ -548,6 +548,7 @@ enum SystemAction: String, Codable, CaseIterable, Identifiable {
     case brightnessUp
     case brightnessDown
     case lockScreen
+    case systemSleep
 
     var id: String { rawValue }
 
@@ -582,6 +583,7 @@ enum SystemAction: String, Codable, CaseIterable, Identifiable {
         case .brightnessUp: "提高亮度"
         case .brightnessDown: "降低亮度"
         case .lockScreen: "锁屏"
+        case .systemSleep: "系统睡眠"
         }
     }
 
@@ -616,6 +618,7 @@ enum SystemAction: String, Codable, CaseIterable, Identifiable {
         case .brightnessUp: "sun.max"
         case .brightnessDown: "sun.min"
         case .lockScreen: "lock"
+        case .systemSleep: "moon.zzz"
         }
     }
 
@@ -629,7 +632,7 @@ enum SystemAction: String, Codable, CaseIterable, Identifiable {
             .navigation
         case .screenshotFullScreen, .screenshotSelection, .screenshot:
             .screenshot
-        case .showDesktop, .missionControl, .switchRecentApp, .closeWindow, .minimizeWindow, .hideApp, .quitApp, .lockScreen:
+        case .showDesktop, .missionControl, .switchRecentApp, .closeWindow, .minimizeWindow, .hideApp, .quitApp, .lockScreen, .systemSleep:
             .windowAndSystem
         case .volumeUp, .volumeDown, .mute:
             .audio
@@ -812,15 +815,15 @@ struct AppSettings: Codable, Hashable {
     var gesturesEnabled: Bool = true
     var hudEnabled: Bool = true
     var hudOnlyForErrors: Bool = false
-    var hudDismissDelay: TimeInterval = 0.9
-    var hudFadeDuration: TimeInterval = 0.15
+    var hudDismissDelay: TimeInterval = 0.3231770833333333
+    var hudFadeDuration: TimeInterval = 0.1302837171052632
     var hudStyle: HUDSettings = HUDSettings()
     var triggerButton: MouseTriggerButton = .right
     var triggerModifiers: ModifierFlags = ModifierFlags()
     var movementThreshold: Double = 12
     var segmentMinDistance: Double = 18
     var launchAtLogin: Bool = false
-    var showDockIcon: Bool = true
+    var showDockIcon: Bool = false
 
     private enum CodingKeys: String, CodingKey {
         case gesturesEnabled
@@ -860,10 +863,19 @@ struct AppSettings: Codable, Hashable {
 enum HUDColorPreset: String, Codable, CaseIterable, Identifiable, Hashable {
     case blue
     case cyan
+    case teal
+    case mint
     case green
+    case lime
+    case yellow
     case orange
+    case amber
     case red
+    case pink
     case purple
+    case indigo
+    case gray
+    case black
     case white
 
     var id: String { rawValue }
@@ -872,10 +884,19 @@ enum HUDColorPreset: String, Codable, CaseIterable, Identifiable, Hashable {
         switch self {
         case .blue: "蓝"
         case .cyan: "青"
+        case .teal: "蓝绿"
+        case .mint: "薄荷"
         case .green: "绿"
+        case .lime: "青柠"
+        case .yellow: "黄"
         case .orange: "橙"
+        case .amber: "琥珀"
         case .red: "红"
+        case .pink: "粉"
         case .purple: "紫"
+        case .indigo: "靛蓝"
+        case .gray: "灰"
+        case .black: "黑"
         case .white: "白"
         }
     }
@@ -884,10 +905,19 @@ enum HUDColorPreset: String, Codable, CaseIterable, Identifiable, Hashable {
         switch self {
         case .blue: .blue
         case .cyan: .cyan
+        case .teal: .teal
+        case .mint: .mint
         case .green: .green
+        case .lime: Color(red: 0.62, green: 0.82, blue: 0.08)
+        case .yellow: .yellow
         case .orange: .orange
+        case .amber: Color(red: 1.0, green: 0.72, blue: 0.12)
         case .red: .red
+        case .pink: .pink
         case .purple: .purple
+        case .indigo: .indigo
+        case .gray: .gray
+        case .black: .black
         case .white: .white
         }
     }
@@ -905,11 +935,18 @@ enum HUDPanelBackgroundStyle: String, Codable, CaseIterable, Identifiable, Hasha
         case .frostedGlass: "磨砂玻璃"
         }
     }
+
+    var frostedGlassRatio: Double {
+        switch self {
+        case .transparentGlass: 0
+        case .frostedGlass: 1
+        }
+    }
 }
 
 struct HUDSettings: Codable, Hashable {
     var showTrajectory: Bool = true
-    var showDirectionGuide: Bool = true
+    var showDirectionGuide: Bool = false
     var directionGuideRadius: Double = 72
     var directionGuideSmoothing: Double = 0.2
     var directionGuideOpacity: Double = 0.72
@@ -917,10 +954,20 @@ struct HUDSettings: Codable, Hashable {
     var directionGuideArrowSize: Double = 13
     var directionGuideFontSize: Double = 9
     var highlightedColor: HUDColorPreset = .blue
-    var normalLineColor: HUDColorPreset = .white
-    var showDirectionLabels: Bool = true
-    var showDirectionArrows: Bool = true
-    var panelBackgroundStyle: HUDPanelBackgroundStyle = .transparentGlass
+    var normalLineColor: HUDColorPreset = .blue
+    var highlightedLineOpacity: Double = 1
+    var normalLineOpacity: Double = 1
+    var showDirectionLabels: Bool = false
+    var showDirectionArrows: Bool = false
+    var panelFrostedGlassRatio: Double = 0.3041049890350877
+
+    var highlightedLineColor: Color {
+        highlightedColor.color.opacity(Self.clampedOpacity(highlightedLineOpacity))
+    }
+
+    var normalLineStrokeColor: Color {
+        normalLineColor.color.opacity(Self.clampedOpacity(normalLineOpacity))
+    }
 
     private enum CodingKeys: String, CodingKey {
         case showTrajectory
@@ -934,8 +981,11 @@ struct HUDSettings: Codable, Hashable {
         case directionGuideFontSize
         case highlightedColor
         case normalLineColor
+        case highlightedLineOpacity
+        case normalLineOpacity
         case showDirectionLabels
         case showDirectionArrows
+        case panelFrostedGlassRatio
         case panelBackgroundStyle
     }
 
@@ -956,9 +1006,17 @@ struct HUDSettings: Codable, Hashable {
         directionGuideFontSize = try container.decodeIfPresent(Double.self, forKey: .directionGuideFontSize) ?? defaults.directionGuideFontSize
         highlightedColor = try container.decodeIfPresent(HUDColorPreset.self, forKey: .highlightedColor) ?? defaults.highlightedColor
         normalLineColor = try container.decodeIfPresent(HUDColorPreset.self, forKey: .normalLineColor) ?? defaults.normalLineColor
+        highlightedLineOpacity = Self.clampedOpacity(try container.decodeIfPresent(Double.self, forKey: .highlightedLineOpacity) ?? defaults.highlightedLineOpacity)
+        normalLineOpacity = Self.clampedOpacity(try container.decodeIfPresent(Double.self, forKey: .normalLineOpacity) ?? defaults.normalLineOpacity)
         showDirectionLabels = try container.decodeIfPresent(Bool.self, forKey: .showDirectionLabels) ?? defaults.showDirectionLabels
         showDirectionArrows = try container.decodeIfPresent(Bool.self, forKey: .showDirectionArrows) ?? defaults.showDirectionArrows
-        panelBackgroundStyle = try container.decodeIfPresent(HUDPanelBackgroundStyle.self, forKey: .panelBackgroundStyle) ?? defaults.panelBackgroundStyle
+        if let ratio = try container.decodeIfPresent(Double.self, forKey: .panelFrostedGlassRatio) {
+            panelFrostedGlassRatio = Self.clampedGlassRatio(ratio)
+        } else if let legacyStyle = try container.decodeIfPresent(HUDPanelBackgroundStyle.self, forKey: .panelBackgroundStyle) {
+            panelFrostedGlassRatio = legacyStyle.frostedGlassRatio
+        } else {
+            panelFrostedGlassRatio = defaults.panelFrostedGlassRatio
+        }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -973,9 +1031,19 @@ struct HUDSettings: Codable, Hashable {
         try container.encode(directionGuideFontSize, forKey: .directionGuideFontSize)
         try container.encode(highlightedColor, forKey: .highlightedColor)
         try container.encode(normalLineColor, forKey: .normalLineColor)
+        try container.encode(Self.clampedOpacity(highlightedLineOpacity), forKey: .highlightedLineOpacity)
+        try container.encode(Self.clampedOpacity(normalLineOpacity), forKey: .normalLineOpacity)
         try container.encode(showDirectionLabels, forKey: .showDirectionLabels)
         try container.encode(showDirectionArrows, forKey: .showDirectionArrows)
-        try container.encode(panelBackgroundStyle, forKey: .panelBackgroundStyle)
+        try container.encode(Self.clampedGlassRatio(panelFrostedGlassRatio), forKey: .panelFrostedGlassRatio)
+    }
+
+    private static func clampedGlassRatio(_ ratio: Double) -> Double {
+        min(max(ratio, 0), 1)
+    }
+
+    private static func clampedOpacity(_ opacity: Double) -> Double {
+        min(max(opacity, 0.05), 1)
     }
 }
 

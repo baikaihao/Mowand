@@ -29,18 +29,14 @@ Mowand is a macOS mouse gesture automation app. Draw directional gestures with y
 
 | Gesture | Default Action |
 |---|---|
-| Left | Back |
-| Right | Forward |
-| Down | Volume Down |
-| Up | Volume Up |
+| Up Right -> Down Right | Selection Screenshot |
+| Down Right -> Up Right | Paste |
+| Left -> Down -> Right -> Down -> Left | System Sleep |
+| Up (Top Right Quarter) | Volume Up |
+| Down (Top Right Quarter) | Volume Down |
 | Right -> Down | Refresh |
-| Down -> Right | Screenshot |
-| Up -> Down | Show Desktop |
-| Left -> Right | Switch to Recent App |
-| Up Right | Brightness Up |
-| Down Right | Brightness Down |
-| Down Left | Mute |
-| Up Left | Lock Screen |
+| Down Left -> Up -> Down Right | Close Window |
+| Down Right -> Down Left | Minimize Window |
 
 ### Permissions
 
@@ -73,18 +69,14 @@ Mowand（魔杖）是一款 macOS 鼠标手势自动化工具。你可以像挥�
 
 | 手势 | 默认动作 |
 |---|---|
-| 左 | 返回 |
-| 右 | 前进 |
-| 下 | 降低音量 |
-| 上 | 提高音量 |
+| 右上 -> 右下 | 选区截图 |
+| 右下 -> 右上 | 粘贴 |
+| 左 -> 下 -> 右 -> 下 -> 左 | 系统睡眠 |
+| 上（右上四分之一） | 提高音量 |
+| 下（右上四分之一） | 降低音量 |
 | 右 -> 下 | 刷新 |
-| 下 -> 右 | 截图 |
-| 上 -> 下 | 显示桌面 |
-| 左 -> 右 | 切换最近使用的 App |
-| 右上 | 提高亮度 |
-| 右下 | 降低亮度 |
-| 左下 | 静音 |
-| 左上 | 锁屏 |
+| 左下 -> 上 -> 右下 | 关闭窗口 |
+| 右下 -> 左下 | 最小化窗口 |
 
 ### 权限
 
